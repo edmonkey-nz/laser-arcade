@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# The Helios shared library is platform-specific and not part of the source;
+# copy your own build/download here per the README, don't commit it.
+libHeliosDacAPI.so
+libHeliosLaserDAC.so
+
+# Local per-player settings (PPS, key bindings, keystone) -- these live in
+# the player's home directory anyway (~/.laser-arcade/config.json), not the
+# repo, but excluded here too in case a stray copy ever ends up in-tree.
+config.json

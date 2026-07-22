@@ -1,0 +1,110 @@
+"""Central configuration for Laser Asteroids.
+
+Everything you'll want to tune for your particular galvos / scanner lives here.
+The two groups that matter most on real hardware are SCANNER TUNING (point
+density, dwell, blanking) and OUTPUT (pps, frame rate). See README for a guide.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+from .keymap import KeyMap
+
+
+# ---------------------------------------------------------------------------
+# Colour is expressed as an (r, g, b) triple 0..255. On a single-colour laser
+# only the intensity matters, so any non-black colour lights the beam.
+# ---------------------------------------------------------------------------
+Colour = tuple
+
+
+@dataclass
+class Settings:
+    # ---- Output selection -------------------------------------------------
+    use_laser: bool = False          # stream frames to the Helios DAC
+    use_sim: bool = True             # draw an on-screen preview of the laser
+    fullscreen: bool = False
+
+    # ---- Laser output (Helios) -------------------------------------------
+    pps: int = 30000                 # points per second sent to the DAC
+    dac_device: int = 0              # which Helios (if you have several)
+    # Candidate shared-library names, tried in order. Newer SDK builds ship
+    # libHeliosLaserDAC.so; older ones libHeliosDacAPI.so.
+    helios_libs: tuple = (
+        "libHeliosDacAPI.so",
+        "libHeliosLaserDAC.so",
+        "./libHeliosDacAPI.so",
+        "./libHeliosLaserDAC.so",
+    )
+    dac_max_points: int = 4096       # hard limit of a single Helios frame
+
+    # ---- Frame timing -----------------------------------------------------
+    target_fps: int = 40             # game logic + frame build rate
+
+    # ---- Scanner geometry -------------------------------------------------
+    # World space is [-1, 1] on both axes. It is mapped into the DAC's
+    # 0..4095 square. `fill` leaves a small border so you don't slam the rails.
+    dac_range: int = 4095
+    fill: float = 0.92
+    invert_x: bool = False
+    invert_y: bool = False           # flip if your projector shows Y upside-down
+    swap_xy: bool = False
+
+    # ---- Scanner tuning (the knobs that fight flicker & tails) -----------
+    # All distances are in DAC units (0..4095).
+    max_step: int = 45               # max gap between lit points on a line.
+                                     #   smaller  -> brighter/straighter, more points
+                                     #   larger   -> fewer points, faster, dimmer
+    blank_step: int = 220            # step size while slewing with the beam OFF
+    corner_dwell: int = 1            # extra repeated points at each corner
+    start_dwell: int = 2             # lit points held at the start of a shape
+    end_dwell: int = 2               # lit points held at the end of a shape
+    blank_dwell: int = 3             # blanked points held at a jump destination
+    # Adaptive density: if a frame would exceed this many LIT points, max_step
+    # is grown automatically so the frame rate stays stable.
+    lit_budget: int = 600
+
+    # ---- Beam colours (ignored on single-colour lasers) ------------------
+    col_ship: Colour = (0, 255, 255)
+    col_asteroid: Colour = (0, 255, 255)
+    col_bullet: Colour = (255, 255, 255)
+    col_saucer: Colour = (255, 80, 80)
+    col_text: Colour = (0, 255, 255)
+    col_debris: Colour = (255, 180, 0)
+    monochrome: bool = False         # force everything to col_ship
+    brightness: float = 1.0          # global 0..1 multiplier
+
+    # ---- Simulator window -------------------------------------------------
+    sim_size: int = 900              # window is square, side in pixels
+    sim_show_blanking: bool = False  # draw the beam-off travel lines faintly
+    sim_show_points: bool = False    # dot every emitted sample (debug)
+    sim_glow: bool = True
+
+    # ---- Audio ------------------------------------------------------------
+    audio: bool = True
+    volume: float = 0.7
+
+    # ---- Player config (edited on the CONFIG screen, saved to disk) -------
+    game_pps: dict = field(default_factory=dict)   # game key -> pps override
+    keymap: KeyMap = field(default_factory=KeyMap)  # remappable gameplay keys
+    # Keystone (trapezoid) correction, applied to the DAC output ONLY (never the
+    # on-screen preview). keystone_h pre-widens/narrows top vs bottom (corrects
+    # a projector tilted up/down); keystone_v pre-widens/narrows left vs right
+    # (corrects a projector offset sideways).
+    keystone_h: float = 0.0
+    keystone_v: float = 0.0
+    # Whether the CONFIG screen itself is sent to the laser, or kept to the
+    # on-screen preview only. The config screen is text-heavy and static, which
+    # is fine on a monitor but can be a lot for a low-pps laser to sit through.
+    config_laser_output: bool = True
+
+    def pps_for(self, game_key: str) -> int:
+        """Configured PPS for a game, falling back to the global default."""
+        return int(self.game_pps.get(game_key, self.pps))
+
+    def beam(self, colour: Colour) -> Colour:
+        """Apply monochrome/brightness policy to a requested colour."""
+        if self.monochrome:
+            colour = self.col_ship
+        b = self.brightness
+        return (int(colour[0] * b), int(colour[1] * b), int(colour[2] * b))
