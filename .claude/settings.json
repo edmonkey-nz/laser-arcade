@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pio device list*)",
+      "Bash(lsusb*)",
+      "Bash(journalctl *)",
+      "Bash(aconnect -l*)",
+      "Bash(pio pkg search*)"
+    ]
+  }
+}

@@ -12,6 +12,9 @@ dist/
 # PyInstaller writes this next to run.py on every build; the flags that
 # generate it live in .github/workflows/build.yml
 *.spec
+# release archives, assembled by the build workflow
+stage/
+laser-arcade-*.tar.gz
 
 # Virtual environments
 .venv/

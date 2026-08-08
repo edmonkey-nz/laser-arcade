@@ -23,26 +23,47 @@ import pygame
 # Button number -> key. Pads disagree wildly about numbering, so this is only a
 # starting point; run `python controller_test.py` to read off your own. Numbers
 # that don't exist on the attached pad are simply ignored.
+# Several numbers map to the same action on purpose, so one map covers pads
+# that number their buttons differently -- a generic USB pad and a DualShock 4
+# can both be plugged in at once and both work. Extra numbers that don't exist
+# on the attached pad are simply never pressed.
 DEFAULT_BUTTON_MAP: Dict[int, int] = {
     0: pygame.K_SPACE,      # fire -- also "start" (space launches from the menu)
     1: pygame.K_LSHIFT,     # alternate / hyperspace
     6: pygame.K_ESCAPE,     # back: game -> menu, config -> save & back
-    10: pygame.K_r,         # retry / reset
-    12: pygame.K_UP,        # D-pad, on pads that report it as buttons
-    13: pygame.K_DOWN,
-    14: pygame.K_LEFT,
-    15: pygame.K_RIGHT,
+    9: pygame.K_ESCAPE,     # ...and DualShock 4 "Options"
+    8: pygame.K_r,          # retry / reset  (DualShock 4 "Share")
+    10: pygame.K_r,         # ...and the generic pad's equivalent
+    12: pygame.K_UP,        # D-pad, only on pads that report it as buttons
+    13: pygame.K_DOWN,      # (ignored when the pad has a real hat -- see
+    14: pygame.K_LEFT,      #  DPAD_BUTTONS below, where 12 would otherwise
+    15: pygame.K_RIGHT,     #  collide with a DualShock 4's right-stick click)
 }
 
 # Hat (D-pad) direction -> key. Diagonals are handled by splitting the axes.
 HAT_X = {-1: pygame.K_LEFT, 1: pygame.K_RIGHT}
 HAT_Y = {-1: pygame.K_DOWN, 1: pygame.K_UP}
 
-# Which axes make up each stick. Pads vary; on some, axes 2/3 are triggers
-# rather than the right stick, in which case set RIGHT_STICK_AXES to None.
-# `python controller_test.py` prints live axis numbers and values.
+# The D-pad entries in the button map above are a fallback for pads that report
+# their D-pad as ordinary buttons. On a pad that has a real hat those numbers
+# mean something else entirely -- on a DualShock 4, button 12 is the right
+# stick click -- so they are ignored whenever a hat is present.
+DPAD_BUTTONS = frozenset((12, 13, 14, 15))
+
+# Which axes make up each stick. Pads disagree, and getting it wrong is not
+# subtle: an analogue trigger rests at -1.0, so mistaking one for a stick axis
+# reads as a direction held down forever. Rather than hard-code it, the resting
+# position of every axis is sampled when a pad connects -- anything already
+# pinned to an extreme is a trigger, and the first two axes that aren't are the
+# right stick. That lands on (2, 3) for a generic pad and (3, 4) for a
+# DualShock 4, both correct.
+#
+# Set AUTODETECT_STICKS = False to force the fallbacks below instead.
+AUTODETECT_STICKS = True
 LEFT_STICK_AXES = (0, 1)
 RIGHT_STICK_AXES = (2, 3)
+# Resting deflection past which an axis is taken to be a trigger, not a stick.
+TRIGGER_REST = -0.9
 
 # Sticks are reported to games as vectors *and* synthesised into keys. The two
 # sticks deliberately use different keys so a single pad can drive both Pong
@@ -73,6 +94,7 @@ class JoystickManager:
     def __init__(self, button_map: Optional[Dict[int, int]] = None,
                  debug: bool = False):
         self.joysticks: Dict[int, pygame.joystick.Joystick] = {}
+        self.layouts: Dict[int, tuple] = {}   # instance id -> (left, right) axes
         self.button_map = dict(button_map or DEFAULT_BUTTON_MAP)
         self.debug = debug
         self.held: Set[int] = set()          # keys currently held, after sticky
@@ -144,37 +166,47 @@ class JoystickManager:
         """
         keys: Set[int] = set()
         left = right = (0.0, 0.0)
-        for joystick in self.joysticks.values():
-            for n in range(joystick.get_numbuttons()):
-                if joystick.get_button(n) and n in self.button_map:
-                    keys.add(self.button_map[n])
+        for iid, joystick in list(self.joysticks.items()):
+            try:
+                has_hat = joystick.get_numhats() > 0
+                for n in range(joystick.get_numbuttons()):
+                    if has_hat and n in DPAD_BUTTONS:
+                        continue
+                    if joystick.get_button(n) and n in self.button_map:
+                        keys.add(self.button_map[n])
 
-            for h in range(joystick.get_numhats()):
-                hx, hy = joystick.get_hat(h)
-                if hx in HAT_X:
-                    keys.add(HAT_X[hx])
-                if hy in HAT_Y:
-                    keys.add(HAT_Y[hy])
+                for h in range(joystick.get_numhats()):
+                    hx, hy = joystick.get_hat(h)
+                    if hx in HAT_X:
+                        keys.add(HAT_X[hx])
+                    if hy in HAT_Y:
+                        keys.add(HAT_Y[hy])
 
-            for axes, stick_keys in ((LEFT_STICK_AXES, LEFT_STICK_KEYS),
-                                     (RIGHT_STICK_AXES, RIGHT_STICK_KEYS)):
-                v = self._read_stick(joystick, axes)
-                if v is None:
-                    continue
-                if axes is LEFT_STICK_AXES:
-                    left = v
-                else:
-                    right = v
-                k_left, k_right, k_up, k_down = stick_keys
-                x, y = v
-                if x < -AXIS_DEADZONE:
-                    keys.add(k_left)
-                elif x > AXIS_DEADZONE:
-                    keys.add(k_right)
-                if y > AXIS_DEADZONE:
-                    keys.add(k_up)
-                elif y < -AXIS_DEADZONE:
-                    keys.add(k_down)
+                layout = self.layouts.get(iid, (LEFT_STICK_AXES, RIGHT_STICK_AXES))
+                for axes, stick_keys, is_left in (
+                        (layout[0], LEFT_STICK_KEYS, True),
+                        (layout[1], RIGHT_STICK_KEYS, False)):
+                    v = self._read_stick(joystick, axes)
+                    if v is None:
+                        continue
+                    if is_left:
+                        left = v
+                    else:
+                        right = v
+                    k_left, k_right, k_up, k_down = stick_keys
+                    x, y = v
+                    if x < -AXIS_DEADZONE:
+                        keys.add(k_left)
+                    elif x > AXIS_DEADZONE:
+                        keys.add(k_right)
+                    if y > AXIS_DEADZONE:
+                        keys.add(k_up)
+                    elif y < -AXIS_DEADZONE:
+                        keys.add(k_down)
+            except pygame.error:
+                # A Bluetooth pad can vanish mid-frame. Drop it and carry on
+                # rather than taking the arcade down with it.
+                self._drop(iid)
 
         self.left_stick, self.right_stick = left, right
         return keys
@@ -193,14 +225,63 @@ class JoystickManager:
                 0.0 if abs(y) < AXIS_NOISE else y)
 
     def _detect_joysticks(self) -> None:
+        """Pick up newly connected pads and forget disconnected ones.
+
+        Keyed by SDL instance id, not device index: indices are renumbered when
+        a device goes away, so an index-keyed cache silently aliases one pad
+        onto another after a Bluetooth drop.
+        """
+        seen = set()
         for i in range(pygame.joystick.get_count()):
-            if i not in self.joysticks:
+            try:
                 joy = pygame.joystick.Joystick(i)
                 joy.init()
-                self.joysticks[i] = joy
-                print("[joystick] detected: %s (%d buttons, %d hats, %d axes)"
+                iid = joy.get_instance_id()
+                seen.add(iid)
+                if iid in self.joysticks:
+                    continue
+                self.joysticks[iid] = joy
+                self.layouts[iid] = self._axis_layout(joy)
+                print("[joystick] connected: %s (%d buttons, %d hats, %d axes;"
+                      " left stick %s, right stick %s)"
                       % (joy.get_name(), joy.get_numbuttons(),
-                         joy.get_numhats(), joy.get_numaxes()))
+                         joy.get_numhats(), joy.get_numaxes(),
+                         self.layouts[iid][0], self.layouts[iid][1]))
+            except pygame.error:
+                continue
+        for iid in [i for i in self.joysticks if i not in seen]:
+            self._drop(iid)
+
+    def _drop(self, iid) -> None:
+        joy = self.joysticks.pop(iid, None)
+        self.layouts.pop(iid, None)
+        name = "?"
+        try:
+            name = joy.get_name() if joy is not None else "?"
+        except pygame.error:
+            pass
+        print("[joystick] disconnected: %s" % name)
+
+    @staticmethod
+    def _axis_layout(joystick):
+        """(left_axes, right_axes) for this pad, from where its axes rest.
+
+        A stick sits near 0 when untouched; an analogue trigger sits at -1. So
+        anything already pinned low is a trigger, and the first two survivors
+        past the left stick are the right stick.
+        """
+        if not AUTODETECT_STICKS:
+            return (LEFT_STICK_AXES, RIGHT_STICK_AXES)
+        try:
+            n = joystick.get_numaxes()
+            if n < 2:
+                return (None, None)
+            spare = [i for i in range(2, n)
+                     if joystick.get_axis(i) > TRIGGER_REST]
+            right = (spare[0], spare[1]) if len(spare) >= 2 else None
+            return ((0, 1), right)
+        except pygame.error:
+            return (LEFT_STICK_AXES, RIGHT_STICK_AXES)
 
     def close(self) -> None:
         self.joysticks.clear()

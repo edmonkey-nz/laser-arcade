@@ -99,18 +99,35 @@ In game: **arrows / WASD** move, **Space** fires, **Shift** is the alternate
 action (Asteroids hyperspace), **R** retries. Missile Command uses the mouse —
 move to aim, click to fire.
 
-**Gamepads work too**, alongside the keyboard. The D-pad and both sticks steer,
-one button fires (which also starts a game), one backs out to the menu, one
-retries. In Pong the **left stick is player 1 and the right stick is player 2**,
-so two people can share one pad; in Missile Command the left stick moves the
-crosshair and fire clicks.
+**Gamepads work too**, alongside the keyboard, and are tested against both a
+generic USB pad and a DualShock 4:
+
+| Control | Action |
+|---|---|
+| D-pad / either stick | steer |
+| Cross (button 0) | fire — also starts a game |
+| Circle (button 1) | alternate / hyperspace |
+| Options, or button 6 | back to the menu |
+| Share, or button 10 | retry |
+
+In Pong the **left stick is player 1 and the right stick is player 2**, so two
+people can share one pad; in Missile Command the left stick moves the crosshair
+and fire clicks.
 
 Quitting is deliberately keyboard-only, so nobody can drop a cabinet to the
 desktop mid-game.
 
+USB or Bluetooth both work — the app just uses whatever the OS exposes as a
+joystick, and pads can be plugged or unplugged while it's running. Several pads
+can be connected at once; their input is combined, and the default button map
+covers generic USB pads and DualShock 4s together, so you can mix them.
+
 Pads disagree wildly about button numbering. If yours is mapped wrongly, run
 `python controller_test.py`, press the buttons you care about, and put the
 numbers it prints into `DEFAULT_BUTTON_MAP` in [`engine/joystick.py`](engine/joystick.py).
+Stick axes are detected automatically. If a Bluetooth pad pairs but never shows
+up, see the troubleshooting notes in [TECHNICAL.md](TECHNICAL.md) — that's
+usually BlueZ refusing an unbonded HID connection, before the app is involved.
 
 ## Config
 

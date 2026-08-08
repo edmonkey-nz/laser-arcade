@@ -79,6 +79,24 @@ binds `p1_*` to W/S and `p2_*` to the arrows. The shell turns the left stick
 into a virtual mouse cursor for Missile Command, handing control back the moment
 a real mouse moves.
 
+Stick axes are worked out per pad rather than assumed, because guessing is not
+subtle: an analogue trigger rests at -1.0, so mistaking one for a stick axis
+reads as a direction held down forever. Measured on real hardware, a generic
+USB pad rests with its triggers on axes 4/5 (right stick 2/3) while a DualShock
+4 rests with them on 2/5 (right stick 3/4) — no fixed pair is right for both.
+
+For the same reason several button numbers map to the same action: one map
+covers pads that number their buttons differently, so a generic pad and a
+DualShock 4 can be connected simultaneously and both work. The D-pad button
+entries (12-15) are a fallback for pads with no hat, and are ignored whenever a
+hat is present — on a DualShock 4, button 12 is the right-stick click, which
+would otherwise read as UP.
+
+Input from all connected pads is unioned. That means two people with two pads
+both drive player 1 from their left stick in Pong; sharing a single pad (left
+stick vs right stick) is the supported two-player arrangement. Per-pad player
+assignment would need the manager to keep its keys separated by device.
+
 ## High scores
 
 `Game.score()` returns the current score or `None`, and `Game.set_high_score()`
@@ -290,7 +308,25 @@ at conservative point rates; Asteroids is heavier when the field is full.
 - **Corners rounded / lines smeared** — lower `--pps` or raise `--max-step` (your
   scanners are being asked for more than they can track), then nudge dwell.
 - **Gamepad does nothing, or only some directions work** — run
-  `python controller_test.py` and check the button/axis numbers against
-  `DEFAULT_BUTTON_MAP` in `engine/joystick.py`. On some pads axes 2/3 are
-  triggers rather than the right stick, which reads as a stuck direction; set
-  `RIGHT_STICK_AXES = None` in that case.
+  `python controller_test.py` and check the button numbers against
+  `DEFAULT_BUTTON_MAP` in `engine/joystick.py`. Stick axes are auto-detected,
+  so triggers no longer read as a stuck direction; if a pad still gets it
+  wrong, set `AUTODETECT_STICKS = False` and fill in the axes by hand.
+- **A Bluetooth pad pairs but the arcade never sees it** — the transport is
+  irrelevant to us: SDL enumerates whatever the OS exposes as a joystick, so if
+  `/dev/input/js*` or a `/proc/bus/input/devices` entry doesn't appear, the pad
+  never reached userspace and no application can see it. Check with:
+
+  ```bash
+  bluetoothctl info <MAC>            # Connected: yes but Bonded: no is the tell
+  journalctl -u bluetooth -n 40 | grep -i input
+  ```
+
+  `hidp_add_connection() Rejected connection from !bonded device` means BlueZ
+  refused the HID channel because the pad paired without bonding — the default
+  `ClassicBondedOnly=true` in `/etc/bluetooth/input.conf`. Re-pair the pad
+  properly (remove it first, then put it in pairing mode) so it bonds; DualShock
+  4 pairing mode is SHARE + PS held until the lightbar double-flashes. Failing
+  that, setting `ClassicBondedOnly=false` under `[General]` in that file and
+  restarting `bluetooth.service` lets unbonded HID devices connect — it is a
+  deliberate security relaxation, so prefer bonding if you can get it.
