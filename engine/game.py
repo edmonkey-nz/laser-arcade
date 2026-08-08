@@ -73,6 +73,17 @@ class Game:
         """Return what to draw this frame. `t` is seconds since launch."""
         return []
 
+    # --- high score (optional) --------------------------------------------
+    def score(self) -> Optional[int]:
+        """Current score, for the persistent high-score table. None means this
+        game doesn't keep one -- two-player games have no single score, and a
+        time trial's record is a *low* time, which this table can't express."""
+        return None
+
+    def set_high_score(self, value: int) -> None:
+        """Seed the best score from previous sessions. Only games that show a
+        high score need to do anything with it."""
+
     # --- audio (all optional) ---------------------------------------------
     def sound_spec(self) -> SoundSpec:
         """Return (one_shots, loops) as name -> mono float32 arrays. Built once

@@ -15,7 +15,7 @@ class PongGame(Game):
     name = "PONG"
     key = "pong"
     players = 2
-    blurb = "P1 W/S   P2 UP/DOWN   ENTER SERVE"
+    blurb = "P1 W/S OR L STICK   P2 UP/DOWN OR R STICK   FIRE SERVE"
     icon = [
         [(-0.85, -0.5), (-0.65, -0.5), (-0.65, 0.5), (-0.85, 0.5), (-0.85, -0.5)],
         [(0.65, -0.5), (0.85, -0.5), (0.85, 0.5), (0.65, 0.5), (0.65, -0.5)],

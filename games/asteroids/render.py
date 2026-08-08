@@ -73,11 +73,11 @@ def _hud(world: World, cfg: Settings, t: float, out: Scene) -> None:
         for pl in font.text_polylines("LASER ASTEROIDS", 0.0, 0.18, 0.15, center=True):
             out.append((pl, ct))
         if int(t * 2) % 2 == 0:
-            for pl in font.text_polylines("PRESS ENTER", 0.0, -0.15, 0.09, center=True):
+            for pl in font.text_polylines("PRESS FIRE", 0.0, -0.15, 0.09, center=True):
                 out.append((pl, ct))
     elif world.state == State.GAMEOVER:
         for pl in font.text_polylines("GAME OVER", 0.0, 0.05, 0.15, center=True):
             out.append((pl, ct))
         if int(t * 2) % 2 == 0:
-            for pl in font.text_polylines("PRESS ENTER", 0.0, -0.25, 0.08, center=True):
+            for pl in font.text_polylines("PRESS FIRE", 0.0, -0.25, 0.08, center=True):
                 out.append((pl, ct))

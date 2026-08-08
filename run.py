@@ -13,16 +13,20 @@ from __future__ import annotations
 
 import argparse
 
+from engine import __version__, store
 from engine.config import Settings
 from engine.shell import Shell
-from engine import store
 from games import GAMES, BY_KEY
 
 
 def parse_args():
     s = Settings()
     p = argparse.ArgumentParser(description="Laser Arcade for the Helios DAC")
+    p.add_argument("--version", action="version",
+                   version="Laser Arcade %s" % __version__)
     p.add_argument("--game", choices=sorted(BY_KEY), help="launch straight into a game")
+    p.add_argument("--selftest", action="store_true",
+                   help="run a headless check of every game and exit")
 
     out = p.add_argument_group("output")
     out.add_argument("--laser", action="store_true", help="stream to the Helios DAC")
@@ -53,6 +57,9 @@ def parse_args():
     look.add_argument("--volume", type=float, default=s.volume)
 
     a = p.parse_args()
+    if a.selftest:
+        from engine.selftest import run as selftest
+        raise SystemExit(selftest())
     s.use_laser = a.laser
     s.use_sim = not a.no_sim
     s.fullscreen = a.fullscreen

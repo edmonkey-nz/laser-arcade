@@ -39,6 +39,9 @@ class DefenderGame(Game):
     def scene(self, t: float) -> Scene:
         return render.scene(self.world, self.cfg, t)
 
+    def score(self):
+        return self.world.score
+
     def sound_spec(self):
         return sfx.build_sounds()
 

@@ -116,7 +116,7 @@ def _hud(world, cfg, out, t, ctext, caccent, cship):
         for pl in font.text_polylines("DEFENDER", 0.0, 0.50, 0.13, center=True):
             out.append((pl, ctext))
         if int(t * 2) % 2 == 0:
-            for pl in font.text_polylines("ENTER TO START", 0.0, -0.15, 0.075, center=True):
+            for pl in font.text_polylines("FIRE TO START", 0.0, -0.15, 0.075, center=True):
                 out.append((pl, ctext))
         for pl in font.text_polylines("ARROWS FLY  SPACE FIRE", 0.0, -0.4, 0.045, center=True):
             out.append((pl, ctext))
@@ -131,5 +131,5 @@ def _hud(world, cfg, out, t, ctext, caccent, cship):
         for pl in font.text_polylines("WAVE " + str(world.wave), 0.0, -0.08, 0.06, center=True):
             out.append((pl, ctext))
         if int(t * 2) % 2 == 0:
-            for pl in font.text_polylines("ENTER TO RETRY", 0.0, -0.32, 0.07, center=True):
+            for pl in font.text_polylines("FIRE TO RETRY", 0.0, -0.32, 0.07, center=True):
                 out.append((pl, ctext))

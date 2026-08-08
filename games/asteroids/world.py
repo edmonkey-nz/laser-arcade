@@ -48,6 +48,16 @@ SAUCER_BULLET_LIFE = 1.3
 EXTRA_LIFE_EVERY = 10000
 START_LIVES = 3
 SAFE_SPAWN_RADIUS = 0.28         # centre must be this clear before respawn
+# ...but only for so long. Big asteroids crawl (AST_BASE_SPEED) and the keep-out
+# circle is SAFE_SPAWN_RADIUS + their radius, so one drifting over the middle
+# can block a centre spawn for tens of seconds. After this much waiting the ship
+# respawns in the middle regardless -- late is worse than tight, and the extra
+# invulnerability below covers the risk.
+RESPAWN_MAX_WAIT = 1.0
+# A tight respawn extends invulnerability until whatever is crossing the middle
+# has passed, instead of moving the ship somewhere safer.
+MAX_SPAWN_INVULN = 6.0
+INVULN_MARGIN = 0.6              # extra grace after the last rock clears
 
 
 class State:
@@ -248,6 +258,7 @@ class World:
         self.saucer_bullets: List[Bullet] = []
         self.debris: List[Debris] = []
         self.dying_timer = 0.0
+        self.respawn_wait = 0.0
         self.wave_gap = 0.0
         self.wave_initial = 1
         self.saucer_timer = random.uniform(9, 16)
@@ -331,6 +342,7 @@ class World:
         self.ship = None
         self.state = State.DYING
         self.dying_timer = 2.0
+        self.respawn_wait = 0.0
 
     # -- main tick ----------------------------------------------------------
     def update(self, dt: float, inp: Input) -> None:
@@ -381,18 +393,47 @@ class World:
             if self.lives <= 0:
                 self.state = State.GAMEOVER
                 self.dying_timer = 8.0
-            elif self._centre_clear():
-                self.ship = Ship()
-                self.state = State.PLAYING
+            else:
+                self.respawn_wait += dt
+                if self._centre_clear() or self.respawn_wait >= RESPAWN_MAX_WAIT:
+                    self.ship = Ship()
+                    self.ship.invuln = self._respawn_invuln()
+                    self.state = State.PLAYING
+
+    def _clearance(self, p: Vec2, t: float = 0.0) -> float:
+        """Distance from p to the nearest hazard's edge, t seconds from now;
+        negative if inside one."""
+        gap = 99.0
+        for a in self.asteroids:
+            gap = min(gap, toro_dist(a.pos + a.vel * t, p) - a.radius)
+        if self.saucer:
+            gap = min(gap, toro_dist(self.saucer.pos + self.saucer.vel * t, p)
+                      - self.saucer.radius)
+        return gap
+
+    def _respawn_invuln(self) -> float:
+        """How long the fresh ship stays invulnerable (and flashing).
+
+        Normally SPAWN_INVULN, but the ship always respawns dead centre, and
+        the middle may still be busy when the wait runs out. So look ahead and
+        hold invulnerability until the last rock crossing the centre has
+        actually passed -- a tight respawn costs the player nothing but a
+        longer blink.
+        """
+        c = Vec2(0, 0)
+        danger = SHIP_RADIUS + 0.02
+        last_bad = 0.0
+        steps = int(MAX_SPAWN_INVULN / 0.1) + 1
+        for i in range(steps):
+            t = i * 0.1
+            if self._clearance(c, t) < danger:
+                last_bad = t
+        if last_bad <= 0.0:
+            return SPAWN_INVULN
+        return min(MAX_SPAWN_INVULN, max(SPAWN_INVULN, last_bad + INVULN_MARGIN))
 
     def _centre_clear(self) -> bool:
-        c = Vec2(0, 0)
-        for a in self.asteroids:
-            if toro_dist(a.pos, c) < SAFE_SPAWN_RADIUS + a.radius:
-                return False
-        if self.saucer and toro_dist(self.saucer.pos, c) < SAFE_SPAWN_RADIUS:
-            return False
-        return True
+        return self._clearance(Vec2(0, 0)) >= SAFE_SPAWN_RADIUS
 
     def _update_playing(self, dt: float, inp: Input) -> None:
         if self.ship:

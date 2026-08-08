@@ -16,7 +16,7 @@ class MissileGame(Game):
     name = "MISSILE"
     key = "missile"
     players = 1
-    blurb = "MOUSE AIM  CLICK FIRE"
+    blurb = "MOUSE/STICK AIM  FIRE"
     icon = [
         [(-0.9, 0.0), (-0.35, 0.0)], [(0.35, 0.0), (0.9, 0.0)],
         [(0.0, -0.9), (0.0, -0.35)], [(0.0, 0.35), (0.0, 0.9)],
@@ -33,6 +33,9 @@ class MissileGame(Game):
 
     def scene(self, t: float) -> Scene:
         return render.scene(self.world, self.cfg, t)
+
+    def score(self):
+        return self.world.score
 
     def sound_spec(self):
         return sfx.build_sounds()

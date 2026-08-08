@@ -29,12 +29,18 @@ class Settings:
     pps: int = 30000                 # points per second sent to the DAC
     dac_device: int = 0              # which Helios (if you have several)
     # Candidate shared-library names, tried in order. Newer SDK builds ship
-    # libHeliosLaserDAC.so; older ones libHeliosDacAPI.so.
+    # libHeliosLaserDAC.so; older ones libHeliosDacAPI.so. Windows and macOS
+    # names are listed too, for the packaged builds -- names that don't exist
+    # on the running platform are skipped quietly.
     helios_libs: tuple = (
         "libHeliosDacAPI.so",
         "libHeliosLaserDAC.so",
         "./libHeliosDacAPI.so",
         "./libHeliosLaserDAC.so",
+        "HeliosLaserDAC.dll",
+        "HeliosDacAPI.dll",
+        "libHeliosDacAPI.dylib",
+        "libHeliosLaserDAC.dylib",
     )
     dac_max_points: int = 4096       # hard limit of a single Helios frame
 

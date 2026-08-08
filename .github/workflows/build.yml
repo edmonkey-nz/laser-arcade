@@ -1,0 +1,114 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: self-test (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.11"]
+        include:
+          - os: ubuntu-latest
+            python: "3.9"      # the oldest version the README claims
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -r requirements.txt
+      - name: Run the headless self-test
+        run: python run.py --selftest
+
+  build:
+    name: build ${{ matrix.name }}
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: linux-x86_64
+            binary: laser-arcade
+          - os: windows-latest
+            name: windows-x86_64
+            binary: laser-arcade.exe
+          - os: macos-latest
+            name: macos-arm64
+            binary: laser-arcade
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install -r requirements.txt pyinstaller
+
+      # No console flag on purpose: the app prints diagnostics ("[joystick]
+      # detected...", "[helios] shared library not found") that people need
+      # when setting up a cabinet.
+      - name: Build
+        run: >
+          pyinstaller --onefile --clean --noconfirm
+          --name laser-arcade
+          --collect-submodules games
+          run.py
+
+      - name: Self-test the built executable
+        run: ./dist/${{ matrix.binary }} --selftest
+        shell: bash
+
+      - name: Check --version
+        run: ./dist/${{ matrix.binary }} --version
+        shell: bash
+
+      - name: Stage the release archive
+        shell: bash
+        run: |
+          mkdir -p stage
+          cp "dist/${{ matrix.binary }}" stage/
+          cp README.md TECHNICAL.md LICENSE stage/
+          cd stage && tar -czf "../laser-arcade-${{ matrix.name }}.tar.gz" .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: laser-arcade-${{ matrix.name }}
+          path: laser-arcade-${{ matrix.name }}.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # needed to create the release
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.tar.gz
+          generate_release_notes: true
+          body: |
+            Download the archive for your platform, unpack it and run
+            `laser-arcade`.
+
+            For real laser output, put your Helios shared library
+            (`libHeliosDacAPI.so`, `HeliosLaserDAC.dll` or the `.dylib`)
+            **next to the executable** — see TECHNICAL.md.

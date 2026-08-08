@@ -166,7 +166,7 @@ def _hud(world, cfg, out, t, ctext, caccent):
         for pl in font.text_polylines("SLIPSTREAM", 0.0, 0.52, 0.12, center=True):
             out.append((pl, ctext))
         if int(t * 2) % 2 == 0:
-            for pl in font.text_polylines("PRESS ENTER", 0.0, -0.2, 0.085, center=True):
+            for pl in font.text_polylines("PRESS FIRE", 0.0, -0.2, 0.085, center=True):
                 out.append((pl, ctext))
         for pl in font.text_polylines("UP GAS  DOWN DRIFT", 0.0, -0.45, 0.05, center=True):
             out.append((pl, ctext))

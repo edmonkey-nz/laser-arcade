@@ -56,13 +56,23 @@ class HeliosOutput(Output):
     # -- library loading ----------------------------------------------------
     def _search_dirs(self) -> List[str]:
         """Where to look for the shared library, most specific first: next to the
-        launched script, the project root, the current directory, ~/.local/lib."""
+        executable/script, the project root, the current directory,
+        ~/.local/lib."""
         dirs: List[str] = []
+        frozen = getattr(sys, "frozen", False)
+        if frozen:
+            # In a PyInstaller build the user drops the library beside the
+            # executable. sys.executable is that path; sys.argv[0] can be a
+            # bare name depending on how it was launched.
+            dirs.append(os.path.dirname(os.path.abspath(sys.executable)))
         try:
             dirs.append(os.path.dirname(os.path.abspath(sys.argv[0])))
         except Exception:
             pass
-        dirs.append(str(Path(__file__).resolve().parents[2]))   # project root
+        if not frozen:
+            # Meaningless when frozen: __file__ then points inside the
+            # temporary extraction directory, not at anything the user has.
+            dirs.append(str(Path(__file__).resolve().parents[2]))
         dirs.append(os.getcwd())
         dirs.append(os.path.expanduser("~/.local/lib"))
         seen, out = set(), []
@@ -123,9 +133,11 @@ class HeliosOutput(Output):
             names = ", ".join(sorted({os.path.basename(n) for n in self.lib_names}))
             print(f"[helios] shared library not found ({names}).")
             print("[helios] looked in: " + "; ".join(self._search_dirs()))
-            print("[helios] copy libHeliosDacAPI.so next to run.py "
-                  "(see README 'Helios DAC setup'). If you had it in your old "
-                  "laser-asteroids folder, just copy it across.")
+            where = ("next to the laser-arcade executable"
+                     if getattr(sys, "frozen", False) else "next to run.py")
+            print("[helios] copy libHeliosDacAPI.so %s "
+                  "(see TECHNICAL.md 'Helios DAC setup'). If you had it in your "
+                  "old laser-asteroids folder, just copy it across." % where)
             return False
         n = self.lib.OpenDevices()
         if n <= 0:

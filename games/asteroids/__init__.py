@@ -37,12 +37,18 @@ class AsteroidsGame(Game):
             thrust=km.down(inp, "up"),
             fire=km.down(inp, "fire"),
             hyperspace=km.hit(inp, "alt"),
-            start=inp.hit(pygame.K_RETURN, pygame.K_KP_ENTER),
+            start=inp.hit(pygame.K_RETURN, pygame.K_KP_ENTER) or km.hit(inp, "fire"),
         )
         self.world.update(dt, ai)
 
     def scene(self, t: float) -> Scene:
         return render.scene(self.world, self.cfg, t)
+
+    def score(self):
+        return self.world.score
+
+    def set_high_score(self, value: int) -> None:
+        self.world.high_score = value
 
     def sound_spec(self):
         return sfx.build_sounds()

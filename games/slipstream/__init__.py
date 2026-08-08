@@ -33,7 +33,7 @@ class SlipstreamGame(Game):
             steer=float(steer),
             accel=km.down(inp, "up"),
             brake=km.down(inp, "brake"),
-            start=inp.hit(pygame.K_RETURN, pygame.K_KP_ENTER),
+            start=inp.hit(pygame.K_RETURN, pygame.K_KP_ENTER) or km.hit(inp, "fire"),
             retry=km.hit(inp, "retry"),
         )
         self.world.update(dt, ri)

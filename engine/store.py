@@ -1,5 +1,6 @@
 """Persist the player's config (per-game PPS, key bindings, pincushion) to a
 small JSON file in the user's home, and apply it to / read it from Settings.
+High scores live beside it in their own file, keyed by game.
 """
 from __future__ import annotations
 
@@ -11,6 +12,7 @@ from .keymap import KeyMap
 
 CONFIG_DIR = os.path.expanduser("~/.laser-arcade")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
+HIGHSCORE_PATH = os.path.join(CONFIG_DIR, "highscores.json")
 
 
 def load() -> Dict:
@@ -53,3 +55,26 @@ def from_settings(cfg) -> Dict:
 
 def save_settings(cfg) -> bool:
     return save(from_settings(cfg))
+
+
+# -- high scores ------------------------------------------------------------
+def load_highscores() -> Dict[str, int]:
+    """game key -> best score. Missing or corrupt file just means no scores
+    yet; a cabinet should still boot."""
+    try:
+        with open(HIGHSCORE_PATH) as f:
+            data = json.load(f)
+        return {str(k): int(v) for k, v in data.items()}
+    except Exception:
+        return {}
+
+
+def save_highscores(scores: Dict[str, int]) -> bool:
+    try:
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        with open(HIGHSCORE_PATH, "w") as f:
+            json.dump({str(k): int(v) for k, v in sorted(scores.items())},
+                      f, indent=2)
+        return True
+    except Exception:
+        return False

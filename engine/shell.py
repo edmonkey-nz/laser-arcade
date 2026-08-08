@@ -27,8 +27,14 @@ from . import store
 from .audio import SoundBank, blip
 from .config import Settings
 from .game import Game, InputState
+from .joystick import JoystickManager
 from .keymap import ACTIONS
 from .outputs import HeliosOutput, Simulator
+
+
+# World units per second for the stick-driven virtual cursor. The world is 2
+# units across, so this crosses the screen in a little over a second.
+PAD_CURSOR_SPEED = 1.8
 
 
 def _screen_to_world(mx: float, my: float, size: int, fill: float):
@@ -50,12 +56,19 @@ class Shell:
         self.menu_focus = "carousel"  # carousel | config
         self.cfg_sel = 0
         self.capture_action: Optional[str] = None
+        self.confirm_scores = False  # armed "RESET HIGHSCORES" row
         self.mode = "menu"          # menu | game | config
+        # populated from disk in run(); defined here so every method can rely
+        # on them existing
+        self.highscores: dict = {}
+        self._scores_dirty = False
 
     # -- lifecycle ----------------------------------------------------------
     def run(self, start_game: Optional[Type[Game]] = None) -> None:
         cfg = self.cfg
         pygame.init()
+        joy_mgr = JoystickManager()
+        joy_mgr.init()
         flags = pygame.FULLSCREEN | pygame.SCALED if cfg.fullscreen else 0
         self.surface = pygame.display.set_mode((cfg.sim_size, cfg.sim_size), flags)
         pygame.display.set_caption("Laser Arcade")
@@ -80,6 +93,7 @@ class Shell:
         self.menu_sfx = SoundBank(
             sounds={"move": blip(440, 0.05), "select": blip(760, 0.12)},
             volume=cfg.volume, enabled=cfg.audio)
+        self.highscores = store.load_highscores()
         self.game: Optional[Game] = None
         self.game_sfx: Optional[SoundBank] = None
         self.game_t = 0.0
@@ -91,6 +105,9 @@ class Shell:
         text_col = cfg.beam(cfg.col_text)
         self._held = set()
         self._mouse_down = False
+        self.quit_requested = False
+        self._pad_cursor = None                       # world-space, or None
+        self._last_mouse = pygame.mouse.get_pos()
         pygame.mouse.set_visible(False)      # games draw their own crosshair
         running = True
         try:
@@ -108,19 +125,7 @@ class Shell:
                                 cfg.keymap.rebind(self.capture_action, e.key)
                             self.capture_action = None
                             continue
-                        if e.key == pygame.K_q:
-                            running = False
-                        elif e.key == pygame.K_ESCAPE:
-                            if self.mode == "game":
-                                self._exit_game()
-                            elif self.mode == "config":
-                                store.save_settings(cfg)
-                                self.mode = "menu"
-                            else:
-                                running = False
-                        elif e.key == pygame.K_p and self.mode == "game":
-                            self.paused = not self.paused
-                        else:
+                        if not self._reserved(e.key):
                             pressed.add(e.key)
                             self._held.add(e.key)
                     elif e.type == pygame.KEYUP:
@@ -133,10 +138,50 @@ class Shell:
                     elif e.type == pygame.WINDOWFOCUSLOST:
                         self._held.clear()
                         self._mouse_down = False
+
+                # Pad input, merged in as if it were the keyboard. Polled after
+                # the event pump (which is what refreshes joystick state), and
+                # `held` is authoritative so the merge re-heals itself after a
+                # focus-loss clear.
+                joy_pressed, joy_released = joy_mgr.update()
+                self._held.difference_update(joy_released)
+                self._held.update(joy_mgr.held)
+                # the pad synthesises keys rather than events, so reserved keys
+                # have to be offered the same chance to consume an edge
+                for k in joy_pressed:
+                    if self._reserved(k, from_pad=True):
+                        self._held.discard(k)
+                    else:
+                        pressed.add(k)
+                if self.quit_requested:
+                    running = False
+                # pad fire doubles as the mouse button, so Missile is playable
+                # without a mouse. Read from the pad only -- binding the
+                # keyboard's fire key to a click would change desktop play.
+                fire_keys = set(cfg.keymap.bindings.get("fire", ()))
+                pad_fire_down = bool(fire_keys & joy_mgr.held)
+                pad_fire_click = bool(fire_keys & joy_pressed)
+
                 mx, my = pygame.mouse.get_pos()
+                if (mx, my) != self._last_mouse:
+                    self._last_mouse = (mx, my)
+                    self._pad_cursor = None      # real mouse takes back control
                 mouse_pos = _screen_to_world(mx, my, cfg.sim_size, cfg.fill)
+                # The left stick steers a virtual cursor for mouse-driven games.
+                # It picks up from wherever the pointer already is, so handing
+                # over from the mouse doesn't jump.
+                ax, ay = joy_mgr.left_stick
+                if ax or ay:
+                    cx, cy = self._pad_cursor if self._pad_cursor else mouse_pos
+                    step = PAD_CURSOR_SPEED * dt
+                    self._pad_cursor = (max(-1.0, min(1.0, cx + ax * step)),
+                                        max(-1.0, min(1.0, cy + ay * step)))
+                if self._pad_cursor:
+                    mouse_pos = self._pad_cursor
+
                 inp = InputState(set(self._held), pressed, mouse_pos,
-                                 self._mouse_down, mouse_click)
+                                 self._mouse_down or pad_fire_down,
+                                 mouse_click or pad_fire_click)
 
                 if self.mode == "game":
                     scene = self._game_step(dt, inp, text_col)
@@ -164,13 +209,42 @@ class Shell:
                     o.send(stream, use_pps)
                 pygame.display.flip()
         finally:
+            self._flush_scores()      # quitting mid-game still keeps the score
             if self.game_sfx:
                 self.game_sfx.close()
             self.menu_sfx.close()
             for o in self.outputs:
                 o.close()
+            joy_mgr.close()
             pygame.mouse.set_visible(True)
             pygame.quit()
+
+    def _reserved(self, key: int, from_pad: bool = False) -> bool:
+        """Handle a shell-reserved key; return True if it was consumed (and so
+        must not reach the menu or a game).
+
+        Quitting is deliberately keyboard-only: on a cabinet the pad is the
+        public-facing control, and a player must not be able to drop the arcade
+        to a desktop. From the pad, Escape still backs out of a game or the
+        config screen -- it just stops short of quitting at the menu.
+        """
+        if key == pygame.K_q:
+            if not from_pad:
+                self.quit_requested = True
+            return True
+        if key == pygame.K_ESCAPE:
+            if self.mode == "game":
+                self._exit_game()
+            elif self.mode == "config":
+                store.save_settings(self.cfg)
+                self.mode = "menu"
+            elif not from_pad:
+                self.quit_requested = True
+            return True
+        if key == pygame.K_p and self.mode == "game":
+            self.paused = not self.paused
+            return True
+        return False
 
     # -- menu (carousel) -----------------------------------------------------
     def _menu_step(self, inp: InputState):
@@ -246,6 +320,7 @@ class Shell:
         for action, label in ACTIONS:
             rows.append(("key", action, label))
         rows.append(("reset", None, "RESET KEYS"))
+        rows.append(("reset_scores", None, "RESET HIGHSCORES"))
         rows.append(("save", None, "SAVE & BACK"))
         return rows
 
@@ -255,9 +330,11 @@ class Shell:
         n = len(rows)
         if inp.hit(pygame.K_UP):
             self.cfg_sel = (self.cfg_sel - 1) % n
+            self.confirm_scores = False       # moving away disarms the reset
             self.menu_sfx.play("move")
         if inp.hit(pygame.K_DOWN):
             self.cfg_sel = (self.cfg_sel + 1) % n
+            self.confirm_scores = False
             self.menu_sfx.play("move")
 
         kind, key, _ = rows[self.cfg_sel]
@@ -274,7 +351,7 @@ class Shell:
             cfg.config_laser_output = not cfg.config_laser_output
             self.menu_sfx.play("move")
 
-        if inp.hit(pygame.K_RETURN, pygame.K_KP_ENTER):
+        if inp.hit(pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
             if kind == "key":
                 self.capture_action = key
             elif kind == "output":
@@ -283,6 +360,17 @@ class Shell:
             elif kind == "reset":
                 cfg.keymap.reset()
                 self.menu_sfx.play("select")
+            elif kind == "reset_scores":
+                # destructive and unrecoverable, so make it deliberate
+                if self.confirm_scores:
+                    self.highscores.clear()
+                    store.save_highscores(self.highscores)
+                    self._scores_dirty = False
+                    self.confirm_scores = False
+                    self.menu_sfx.play("select")
+                else:
+                    self.confirm_scores = True
+                    self.menu_sfx.play("move")
             elif kind == "save":
                 store.save_settings(cfg)
                 self.menu_sfx.play("select")
@@ -315,6 +403,8 @@ class Shell:
                     text = "%s  <PRESS KEY>" % label
                 else:
                     text = "%s  %s" % (label, cfg.keymap.label(key))
+            elif kind == "reset_scores":
+                text = "CLEAR ALL - CONFIRM?" if self.confirm_scores else label
             else:
                 text = label
             colour = csel if r == self.cfg_sel else ct
@@ -336,6 +426,7 @@ class Shell:
     def _launch(self, game_cls: Type[Game]) -> None:
         self.game = game_cls(self.cfg)
         self.game.start()
+        self.game.set_high_score(self.highscores.get(self.game.key, 0))
         self.game_t = 0.0
         self.paused = False
         self.mode = "game"
@@ -343,7 +434,24 @@ class Shell:
         self.game_sfx = SoundBank(sounds=sounds, loops=loops,
                                   volume=self.cfg.volume, enabled=self.cfg.audio)
 
+    def _record_score(self) -> None:
+        """Fold the running game's score into the table. Called every frame --
+        writing to disk is left to _flush_scores, on the way out of a game."""
+        if self.game is None:
+            return
+        s = self.game.score()
+        if s is None:
+            return
+        if int(s) > self.highscores.get(self.game.key, 0):
+            self.highscores[self.game.key] = int(s)
+            self._scores_dirty = True
+
+    def _flush_scores(self) -> None:
+        if self._scores_dirty and store.save_highscores(self.highscores):
+            self._scores_dirty = False
+
     def _exit_game(self) -> None:
+        self._flush_scores()
         if self.game_sfx:
             self.game_sfx.close()
             self.game_sfx = None
@@ -354,6 +462,7 @@ class Shell:
     def _game_step(self, dt: float, inp: InputState, text_col):
         if not self.paused:
             self.game.update(dt, inp)
+            self._record_score()
             self.game_t += dt
             for ev in self.game.audio_events():
                 self.game_sfx.play(ev)
