@@ -1,5 +1,5 @@
 from .base import Output
 from .simulator import Simulator
-from .helios import HeliosOutput
+from .laser import make_backend, to_frame
 
-__all__ = ["Output", "Simulator", "HeliosOutput"]
+__all__ = ["Output", "Simulator", "make_backend", "to_frame"]

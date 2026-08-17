@@ -33,13 +33,30 @@ def save(data: Dict) -> bool:
         return False
 
 
+# Two things are deliberately absent from everything below, and must stay
+# absent:
+#
+#   max_brightness -- the ceiling is NOT persisted. Every launch starts at 5%
+#       bring-up power and the operator has to raise it on purpose. Upstream
+#       laser-laser-laser does persist it (see SAFETY.md "Known gaps": raise it
+#       once and it stays raised). An arcade cabinet gets power-cycled by
+#       people who are not the operator, so this repo is deliberately stricter.
+#
+#   armed -- there is no auto-arm flag and never should be. The ARM gate is the
+#       per-session guarantee; a remembered "armed" would destroy it.
+
 def apply_to(cfg, data: Dict) -> None:
     """Load persisted values onto a Settings instance."""
     cfg.game_pps = {str(k): int(v) for k, v in data.get("pps", {}).items()}
     cfg.keystone_h = float(data.get("keystone_h", 0.0))
     cfg.keystone_v = float(data.get("keystone_v", 0.0))
-    cfg.config_laser_output = bool(data.get("config_laser_output", True))
+    cfg.config_laser_output = bool(data.get("config_laser_output", False))
     cfg.keymap = KeyMap(data.get("keys"))
+    # Which projector this cabinet has is a property of the cabinet, so it is
+    # worth remembering. Arm state and the ceiling are not (see above).
+    kind = str(data.get("output_kind", cfg.output_kind))
+    if kind in ("none", "helios", "lasercube"):
+        cfg.output_kind = kind
 
 
 def from_settings(cfg) -> Dict:
@@ -48,8 +65,9 @@ def from_settings(cfg) -> Dict:
         "pps": {k: int(v) for k, v in getattr(cfg, "game_pps", {}).items()},
         "keystone_h": float(getattr(cfg, "keystone_h", 0.0)),
         "keystone_v": float(getattr(cfg, "keystone_v", 0.0)),
-        "config_laser_output": bool(getattr(cfg, "config_laser_output", True)),
+        "config_laser_output": bool(getattr(cfg, "config_laser_output", False)),
         "keys": cfg.keymap.to_dict() if getattr(cfg, "keymap", None) else {},
+        "output_kind": str(getattr(cfg, "output_kind", "none")),
     }
 
 

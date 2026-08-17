@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
 """Laser Arcade -- entry point.
 
-    python run.py                       # menu (on-screen simulator)
-    python run.py --laser               # menu, streaming to the Helios DAC
-    python run.py --game pong --laser   # jump straight into a game
-    python run.py --pps 30000 --max-step 35 --invert-x --laser
+    python run.py                            # menu (on-screen simulator)
+    python run.py --output helios            # menu, streaming to a Helios DAC
+    python run.py --output lasercube         # ...or a LaserCube, over the network
+    python run.py --game pong --output helios
+    python run.py --pps 30000 --max-step 35 --invert-x --output helios
 
 Reserved keys everywhere: Esc (game -> menu, menu -> quit), Q (quit),
-P (pause). In the menu: Up/Down choose, Enter launches.
+P (pause), '.' (DISARM the laser), Shift-'.' (ARM it, twice to confirm).
+In the menu: Up/Down choose, Enter launches.
+
+Laser output always starts DISARMED with the brightness ceiling at 5%, and
+neither is remembered between runs. Arming, the brightness ceiling and the
+whole CONFIG screen are keyboard-only -- a gamepad plays games and nothing
+else. Read SAFETY.md before connecting a projector.
 """
 from __future__ import annotations
 
@@ -29,10 +36,30 @@ def parse_args():
                    help="run a headless check of every game and exit")
 
     out = p.add_argument_group("output")
-    out.add_argument("--laser", action="store_true", help="stream to the Helios DAC")
+    out.add_argument("--output", choices=("none", "helios", "lasercube"),
+                     default=None, help="laser backend (default: remembered, "
+                     "else none). Output always starts DISARMED.")
+    out.add_argument("--laser", action="store_true",
+                     help="alias for --output helios")
     out.add_argument("--no-sim", action="store_true", help="disable the on-screen preview")
     out.add_argument("--fullscreen", action="store_true")
     out.add_argument("--sim-size", type=int, default=s.sim_size)
+
+    safe = p.add_argument_group("laser safety")
+    safe.add_argument("--max-brightness", type=float, default=s.max_brightness,
+                      help="brightness ceiling 0..1 (default %(default)s). A "
+                           "creative limiter, NOT a safety interlock -- read "
+                           "SAFETY.md.")
+
+    lc = p.add_argument_group("lasercube")
+    lc.add_argument("--lasercube-ip", default=s.lasercube_ip,
+                    help="device IP (default: discover by broadcast)")
+    lc.add_argument("--lasercube-dry-run", action="store_true",
+                    help="pack and rate-control, but transmit nothing")
+    lc.add_argument("--lasercube-point-order", choices=("xyrgb", "rgbxy"),
+                    default=s.lasercube_point_order)
+    lc.add_argument("--list-lasercubes", action="store_true",
+                    help="discover LaserCubes on the network and exit")
 
     dac = p.add_argument_group("dac / timing")
     dac.add_argument("--pps", type=int, default=s.pps)
@@ -60,7 +87,25 @@ def parse_args():
     if a.selftest:
         from engine.selftest import run as selftest
         raise SystemExit(selftest())
-    s.use_laser = a.laser
+    if a.list_lasercubes:
+        from lasercube_output import discover
+        found = discover()
+        for d in found:
+            print(d)
+        if not found:
+            print("no LaserCubes found on the network")
+        raise SystemExit(0 if found else 1)
+    # --output wins; --laser is the old spelling of --output helios. Neither
+    # given means "whatever this cabinet was last set to" (loaded from disk in
+    # __main__), which for a fresh install is "none". Returned separately so it
+    # can be re-applied *after* the persisted config, which would otherwise
+    # clobber an explicit choice on the command line.
+    explicit_output = a.output if a.output is not None else (
+        "helios" if a.laser else None)
+    s.max_brightness = max(0.0, min(1.0, a.max_brightness))
+    s.lasercube_ip = a.lasercube_ip
+    s.lasercube_dry_run = a.lasercube_dry_run
+    s.lasercube_point_order = a.lasercube_point_order
     s.use_sim = not a.no_sim
     s.fullscreen = a.fullscreen
     s.sim_size = a.sim_size
@@ -76,17 +121,24 @@ def parse_args():
     s.invert_y = a.invert_y
     s.swap_xy = a.swap_xy
     s.monochrome = a.mono
-    s.brightness = a.brightness
+    # Clamped: beam() multiplies straight into the 0..255 colour channels, and
+    # an unclamped multiplier used to overflow silently through the DAC's
+    # uint8 fields -- --brightness 5.0 wrapped rather than saturating.
+    s.brightness = max(0.0, min(1.0, a.brightness))
     s.sim_show_blanking = a.show_blanking
     s.audio = not a.no_audio
     s.volume = a.volume
-    if not s.use_sim and not s.use_laser:
+    if not s.use_sim and explicit_output in (None, "none"):
         s.use_sim = True
-    return s, a.game
+    return s, a.game, explicit_output
 
 
 if __name__ == "__main__":
-    cfg, game_key = parse_args()
+    cfg, game_key, explicit_output = parse_args()
     store.apply_to(cfg, store.load())     # per-game pps, key bindings, pincushion
+    if explicit_output is not None:       # command line beats the saved device
+        cfg.output_kind = explicit_output
+    if not cfg.use_sim and cfg.output_kind == "none":
+        cfg.use_sim = True                # otherwise there is nothing to see
     start = BY_KEY[game_key] if game_key else None
     Shell(cfg, GAMES).run(start_game=start)

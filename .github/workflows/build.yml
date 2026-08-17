@@ -80,7 +80,7 @@ jobs:
         run: |
           mkdir -p stage
           cp "dist/${{ matrix.binary }}" stage/
-          cp README.md TECHNICAL.md LICENSE stage/
+          cp README.md TECHNICAL.md SAFETY.md LICENSE stage/
           cd stage && tar -czf "../laser-arcade-${{ matrix.name }}.tar.gz" .
 
       - uses: actions/upload-artifact@v4

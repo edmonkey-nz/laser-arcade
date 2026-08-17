@@ -13,6 +13,10 @@ blanked slews, adaptive density) so the beam looks clean instead of smeared.
 laser-arcade/
   run.py                    entry point + CLI
   controller_test.py        gamepad diagnostic (prints live button/axis numbers)
+  laser_output.py           SHARED: arm gate, brightness ceiling, watchdog
+  helios.py                 SHARED: Helios ctypes backend
+  lasercube_output.py       SHARED: LaserCube UDP network backend
+  scripts/lasercube_sim.py  SHARED: fake LaserCube, for dry runs
   engine/                   reusable, game-agnostic core
     config.py               all tunables (Settings)
     vec.py                  2-vector
@@ -24,7 +28,7 @@ laser-arcade/
     keymap.py               remappable gameplay actions
     joystick.py             gamepads, translated into key codes
     store.py                config + high score JSON (~/.laser-arcade)
-    outputs/                base / simulator / helios
+    outputs/                base / simulator / laser (adapter to the shared layer)
   games/
     __init__.py             GAMES registry (menu order lives here)
     asteroids/              world.py, shapes.py, render.py, sfx.py + adapter
@@ -51,6 +55,50 @@ Three ideas hold it together:
 
 Games are decoupled from raw keys by an `InputState` (which keys are `down()`
 this frame, which were `hit()` as edges), so each game maps its own controls.
+
+A fourth idea arrived with laser output:
+
+- **The output layer is borrowed, not owned.** `laser_output.py`, `helios.py`
+  and `lasercube_output.py` are verbatim copies from the upstream
+  `laser-laser-laser` repo and must not be forked here. The arcade meets them
+  through one adapter, `engine/outputs/laser.py`. See *The laser output layer*.
+
+## Input provenance (keyboard vs gamepad)
+
+The shell keeps **two** key sets per frame, and this is a safety boundary rather
+than a convenience:
+
+| Set | Contents | Who sees it |
+|---|---|---|
+| `_held` / `pressed` | keyboard **and** pad, merged | games, the menu carousel |
+| `_kbd_held` / `kbd_pressed` | keyboard only | the config screen, the arm gate, quit |
+
+`engine/joystick.py` deliberately makes a pad look like a keyboard, which is
+what keeps games ignorant of joysticks — but it also means that by the time an
+`InputState` is built, a pad's Space is indistinguishable from a real one. On a
+cabinet the pad is in a stranger's hands and the keyboard is the operator's
+console, so anything that can point a Class 4 laser has to be able to tell them
+apart.
+
+The keyboard-only set is **tracked separately** rather than derived by
+subtracting the pad's keys from the merged set. Subtraction would drop a key
+that happened to be held on both devices at once, silently failing open for the
+operator at exactly the wrong moment.
+
+Three gates consume it, all in `engine/shell.py`:
+
+1. `_menu_step(inp, kbd_inp)` — the carousel takes either source; moving focus
+   onto **CONFIG** takes `kbd_inp`. Gating the *focus* and not merely the Enter
+   press is deliberate: a pad that could highlight CONFIG and then find Enter
+   does nothing reads as a broken cabinet rather than a locked one.
+2. `_config_step(kbd_inp)` — one call site, always the keyboard-only view, so a
+   config row added later cannot accidentally become pad-reachable.
+3. `_reserved(key, mod, from_pad)` — the pre-existing hook that already made
+   quitting keyboard-only. It now also owns `.` / `Shift-.` (disarm/arm) and
+   returns early for *any* pad key while `mode == "config"`.
+
+`--selftest` drives all of this through the real merge path with a synthetic
+pad; see `_safety_checks` in `engine/selftest.py`.
 
 ## Gamepads
 
@@ -183,7 +231,7 @@ and on `v*` tags.
 To cut a release, bump `__version__` in `engine/__init__.py`, then:
 
 ```bash
-git tag v1.1.0 && git push origin v1.1.0
+git tag v1.3.0 && git push origin v1.3.0
 ```
 
 The build is deliberately **not** `--windowed`: the app prints diagnostics
@@ -198,6 +246,60 @@ beside the executable.
 
 `engine/selftest.py` lives in the engine rather than `tools/` precisely so it
 ends up inside the packaged binary.
+
+## The laser output layer
+
+Read [SAFETY.md](SAFETY.md) before changing anything in this section.
+
+Four files at the repo root are **copies from the upstream `laser-laser-laser`
+repo, shared verbatim with it and with promptwaver**:
+
+| File | What it is |
+|---|---|
+| `laser_output.py` | `LaserOutput` protocol, `NullOutput`, `SafeOutput` (arm gate, brightness ceiling, watchdog, blank-on-exit), `install_panic_handlers` |
+| `helios.py` | Helios ctypes backend |
+| `lasercube_output.py` | LaserCube UDP network backend |
+| `scripts/lasercube_sim.py` | a fake LaserCube for dry runs |
+
+**This repo is downstream. Fix bugs upstream and re-copy; do not fork them.** A
+bug in `laser_output.py` is a safety bug in three repositories at once. There is
+no tooling for the sync and deliberately no build step — the discipline is
+manual:
+
+```bash
+diff laser_output.py ../laser-laser-laser/laser_output.py
+sha256sum laser_output.py ../*/laser_output.py
+```
+
+If you want to change one of these files *for this project only*, that is the
+signal the change belongs behind a constructor argument instead — `lib_path` and
+`max_brightness` both exist for exactly that reason.
+
+### How the arcade plugs into it
+
+The shared layer speaks a numpy `(N,6)` int32 frame (`x, y, r, g, b, i`); the
+arcade's planner emits a list of `(x, y, r, g, b)` 5-tuples. The seam is
+`engine/outputs/laser.py`:
+
+- `to_frame(points, cfg)` — converts, derives `i = max(r, g, b)` (this repo's
+  long-standing convention), and applies the **keystone warp**.
+- `make_backend(kind, cfg)` — a literal `if/elif` with direct imports, because
+  PyInstaller cannot trace `importlib` and would silently drop the backend.
+
+The keystone warp used to live inside the Helios backend. It moved because
+**every output transform must run before `SafeOutput.write()`** — anything
+downstream of the brightness ceiling can exceed it, which defeats the ceiling
+entirely. If you add a transform, it goes in `to_frame`, not in a backend.
+
+The simulator is fed the *untouched* point list, so the preview shows what the
+content actually is: full brightness, unwarped, regardless of arm state. Dimming
+it would make the ceiling invisible rather than obvious.
+
+`HeliosOutput.paces_loop` is `True`, so `write()` blocks on `GetStatus` (bounded
+at 500 ms) and the DAC's point clock helps time the loop. The old latest-wins
+writer thread was **removed** rather than kept alongside it: with a thread in
+between, the watchdog's heartbeat would track the writer rather than the render
+loop, and a stalled game loop would go undetected.
 
 ## Helios DAC setup (for real laser output)
 

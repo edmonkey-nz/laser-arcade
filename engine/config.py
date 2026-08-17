@@ -21,9 +21,30 @@ Colour = tuple
 @dataclass
 class Settings:
     # ---- Output selection -------------------------------------------------
-    use_laser: bool = False          # stream frames to the Helios DAC
+    output_kind: str = "none"        # none | helios | lasercube
     use_sim: bool = True             # draw an on-screen preview of the laser
     fullscreen: bool = False
+
+    # ---- Laser safety -----------------------------------------------------
+    # The brightness ceiling: a hard cap applied at the very last step before
+    # the device, after every scene, colour and geometry transform. Nothing
+    # upstream can exceed it -- not `brightness` below, not a game's palette.
+    #
+    # It is a CREATIVE LIMITER, NOT A SAFETY INTERLOCK. It cannot help against
+    # a crash, a driver bug or a stuck buffer, and 5% of a 7.5 W beam held
+    # stationary still burns. The key switch, shutter, interlock loop and
+    # Remote Stop are the actual safety layer. See SAFETY.md.
+    #
+    # Deliberately NOT persisted to disk -- see engine/store.py. Every launch
+    # starts at bring-up power.
+    max_brightness: float = 0.05
+    # Output always starts DISARMED. There is no setting to change that, and
+    # adding one would defeat the point of the gate.
+
+    # ---- Laser output (LaserCube network backend) ------------------------
+    lasercube_ip: str = ""           # "" -> discover by UDP broadcast
+    lasercube_dry_run: bool = False  # pack and rate-control, transmit nothing
+    lasercube_point_order: str = "xyrgb"   # "rgbxy" if the image comes out wrong
 
     # ---- Laser output (Helios) -------------------------------------------
     pps: int = 30000                 # points per second sent to the DAC
@@ -102,7 +123,9 @@ class Settings:
     # Whether the CONFIG screen itself is sent to the laser, or kept to the
     # on-screen preview only. The config screen is text-heavy and static, which
     # is fine on a monitor but can be a lot for a low-pps laser to sit through.
-    config_laser_output: bool = True
+    # Defaults to screen-only: config is an operator activity at the keyboard,
+    # and there is no reason to paint a wall of text with the beam to do it.
+    config_laser_output: bool = False
 
     def pps_for(self, game_key: str) -> int:
         """Configured PPS for a game, falling back to the global default."""

@@ -20,6 +20,32 @@ class Simulator(Output):
         self.surface = surface
         self.cfg = cfg
         self.size = surface.get_width()
+        self._status = None
+        # The one place in the engine that uses a bitmap font rather than the
+        # stroke font. Deliberate: the arm badge is an *operator* readout for
+        # the monitor, and drawing it with the vector font would burn it into
+        # the projected image and spend beam points on it.
+        try:
+            self._font = pygame.font.SysFont(None, 26, bold=True)
+        except Exception:
+            self._font = None
+
+    def set_status(self, status) -> None:
+        """(text, colour) drawn as a badge over the preview, or None."""
+        self._status = status
+
+    def _draw_status(self) -> None:
+        if not self._status or self._font is None:
+            return
+        text, colour = self._status
+        label = self._font.render(text, True, colour)
+        pad = 6
+        box = pygame.Surface((label.get_width() + pad * 2,
+                              label.get_height() + pad * 2))
+        box.set_alpha(190)
+        box.fill((0, 0, 0))
+        self.surface.blit(box, (8, 8))
+        self.surface.blit(label, (8 + pad, 8 + pad))
 
     def _px(self, x: int, y: int) -> Tuple[int, int]:
         # The invert/swap flags are *hardware calibration* for the projector, so
@@ -65,3 +91,4 @@ class Simulator(Output):
                 surf.set_at(px, (60, 60, 90) if not lit else (r, g, b))
             prev = pt
             prev_px = px
+        self._draw_status()
