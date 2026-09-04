@@ -8,7 +8,8 @@
     python run.py --pps 30000 --max-step 35 --invert-x --output helios
 
 Reserved keys everywhere: Esc (game -> menu, menu -> quit), Q (quit),
-P (pause), '.' (DISARM the laser), Shift-'.' (ARM it, twice to confirm).
+P (pause), Tab (live tuner: PPS/POINTS for whatever is on screen, adjusted with
+- = and [ ]), '.' (DISARM the laser), Shift-'.' (ARM it, twice to confirm).
 In the menu: Up/Down choose, Enter launches.
 
 Laser output always starts DISARMED with the brightness ceiling at 5%, and
@@ -62,7 +63,9 @@ def parse_args():
                     help="discover LaserCubes on the network and exit")
 
     dac = p.add_argument_group("dac / timing")
-    dac.add_argument("--pps", type=int, default=s.pps)
+    dac.add_argument("--pps", type=int, default=None,
+                     help="default point rate (default: remembered, else %d)"
+                          % s.pps)
     dac.add_argument("--fps", type=int, default=s.target_fps)
     dac.add_argument("--device", type=int, default=s.dac_device)
 
@@ -72,6 +75,9 @@ def parse_args():
     tune.add_argument("--blank-dwell", type=int, default=s.blank_dwell)
     tune.add_argument("--lit-budget", type=int, default=s.lit_budget)
     tune.add_argument("--fill", type=float, default=s.fill)
+    tune.add_argument("--scale", type=float, default=None,
+                      help="overall output size 0.10..1.0 (default: remembered, "
+                           "else 1.0)")
     tune.add_argument("--invert-x", action="store_true")
     tune.add_argument("--invert-y", action="store_true")
     tune.add_argument("--swap-xy", action="store_true")
@@ -95,13 +101,28 @@ def parse_args():
         if not found:
             print("no LaserCubes found on the network")
         raise SystemExit(0 if found else 1)
-    # --output wins; --laser is the old spelling of --output helios. Neither
-    # given means "whatever this cabinet was last set to" (loaded from disk in
-    # __main__), which for a fresh install is "none". Returned separately so it
-    # can be re-applied *after* the persisted config, which would otherwise
-    # clobber an explicit choice on the command line.
-    explicit_output = a.output if a.output is not None else (
-        "helios" if a.laser else None)
+    # Settings the config screen also owns are collected here rather than
+    # written onto `s` directly: they are re-applied in __main__ *after* the
+    # persisted config, which would otherwise clobber an explicit choice on the
+    # command line. Not passing one means "whatever this cabinet was last set
+    # to", which for a fresh install is the Settings default.
+    #
+    # --output wins over --laser, the old spelling of --output helios.
+    explicit = {}
+    if a.output is not None:
+        explicit["output_kind"] = a.output
+    elif a.laser:
+        explicit["output_kind"] = "helios"
+    if a.pps is not None:
+        explicit["pps"] = a.pps
+    if a.scale is not None:
+        explicit["output_scale"] = max(0.10, min(1.0, a.scale))
+    # store_true, so these can only turn a flip *on* from the command line;
+    # turning one off again is the config screen's job.
+    if a.invert_x:
+        explicit["invert_x"] = True
+    if a.invert_y:
+        explicit["invert_y"] = True
     s.max_brightness = max(0.0, min(1.0, a.max_brightness))
     s.lasercube_ip = a.lasercube_ip
     s.lasercube_dry_run = a.lasercube_dry_run
@@ -109,7 +130,6 @@ def parse_args():
     s.use_sim = not a.no_sim
     s.fullscreen = a.fullscreen
     s.sim_size = a.sim_size
-    s.pps = a.pps
     s.target_fps = a.fps
     s.dac_device = a.device
     s.max_step = a.max_step
@@ -117,8 +137,6 @@ def parse_args():
     s.blank_dwell = a.blank_dwell
     s.lit_budget = a.lit_budget
     s.fill = a.fill
-    s.invert_x = a.invert_x
-    s.invert_y = a.invert_y
     s.swap_xy = a.swap_xy
     s.monochrome = a.mono
     # Clamped: beam() multiplies straight into the 0..255 colour channels, and
@@ -128,16 +146,16 @@ def parse_args():
     s.sim_show_blanking = a.show_blanking
     s.audio = not a.no_audio
     s.volume = a.volume
-    if not s.use_sim and explicit_output in (None, "none"):
+    if not s.use_sim and explicit.get("output_kind", "none") == "none":
         s.use_sim = True
-    return s, a.game, explicit_output
+    return s, a.game, explicit
 
 
 if __name__ == "__main__":
-    cfg, game_key, explicit_output = parse_args()
-    store.apply_to(cfg, store.load())     # per-game pps, key bindings, pincushion
-    if explicit_output is not None:       # command line beats the saved device
-        cfg.output_kind = explicit_output
+    cfg, game_key, explicit = parse_args()
+    store.apply_to(cfg, store.load())     # pps, key bindings, output geometry
+    for name, value in explicit.items():  # command line beats the saved config
+        setattr(cfg, name, value)
     if not cfg.use_sim and cfg.output_kind == "none":
         cfg.use_sim = True                # otherwise there is nothing to see
     start = BY_KEY[game_key] if game_key else None

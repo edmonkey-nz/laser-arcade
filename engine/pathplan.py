@@ -32,7 +32,14 @@ class Mapper:
     def __init__(self, s: Settings):
         self.s = s
         self.center = s.dac_range / 2.0
-        self.half = self.center * s.fill
+        # `fill` is the fixed margin that keeps us off the rails; `output_scale`
+        # is the operator's framing knob on top of it. Folding the scale in here
+        # rather than downstream keeps it in front of the keystone warp in
+        # engine/outputs/laser.py, which is the order that makes a keystone
+        # calibration survive a scale change: the trapezoid error a tilted
+        # projector produces shrinks with the image, so the correction must too.
+        scale = max(0.10, min(1.0, getattr(s, "output_scale", 1.0)))
+        self.half = self.center * s.fill * scale
 
     def __call__(self, p: Tuple[float, float]) -> Tuple[int, int]:
         x, y = p

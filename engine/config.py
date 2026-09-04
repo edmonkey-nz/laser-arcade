@@ -47,7 +47,11 @@ class Settings:
     lasercube_point_order: str = "xyrgb"   # "rgbxy" if the image comes out wrong
 
     # ---- Laser output (Helios) -------------------------------------------
-    pps: int = 30000                 # points per second sent to the DAC
+    pps: int = 14000                 # points per second sent to the DAC. This is
+                                     # the DEFAULT rate: it drives the menu and
+                                     # the config screen, and is the fallback for
+                                     # any game without its own `game_pps` entry.
+                                     # Editable on the config screen and saved.
     dac_device: int = 0              # which Helios (if you have several)
     # Candidate shared-library names, tried in order. Newer SDK builds ship
     # libHeliosLaserDAC.so; older ones libHeliosDacAPI.so. Windows and macOS
@@ -73,9 +77,19 @@ class Settings:
     # 0..4095 square. `fill` leaves a small border so you don't slam the rails.
     dac_range: int = 4095
     fill: float = 0.92
-    invert_x: bool = False
+    invert_x: bool = False           # FLIP X on the config screen
     invert_y: bool = False           # flip if your projector shows Y upside-down
     swap_xy: bool = False
+    # Overall output size, 0.10..1.00 in 5% steps, applied in the mapper so it
+    # shrinks *everything* -- every game, the menu and the config screen -- on
+    # both the laser and the preview. It is framing, not distortion correction,
+    # which is why (unlike keystone) the preview does show it.
+    #
+    # Shrinking concentrates the same beam power into a smaller area: the galvos
+    # travel less for the same point rate, so dwell per unit area goes up and the
+    # image gets hotter, not cooler. Hence the 10% floor, and hence turning this
+    # down is not a substitute for turning `max_brightness` down.
+    output_scale: float = 1.0
 
     # ---- Scanner tuning (the knobs that fight flicker & tails) -----------
     # All distances are in DAC units (0..4095).
@@ -113,6 +127,7 @@ class Settings:
 
     # ---- Player config (edited on the CONFIG screen, saved to disk) -------
     game_pps: dict = field(default_factory=dict)   # game key -> pps override
+    game_points: dict = field(default_factory=dict)  # game key -> lit_budget override
     keymap: KeyMap = field(default_factory=KeyMap)  # remappable gameplay keys
     # Keystone (trapezoid) correction, applied to the DAC output ONLY (never the
     # on-screen preview). keystone_h pre-widens/narrows top vs bottom (corrects
@@ -128,8 +143,18 @@ class Settings:
     config_laser_output: bool = False
 
     def pps_for(self, game_key: str) -> int:
-        """Configured PPS for a game, falling back to the global default."""
+        """Configured PPS for a game, falling back to the global default.
+        `game_key` None means the menu/config screen, i.e. the default."""
         return int(self.game_pps.get(game_key, self.pps))
+
+    def points_for(self, game_key: str) -> int:
+        """Configured point budget for a game, falling back to lit_budget.
+
+        Together with pps_for() this sets the refresh rate the audience sees:
+        the DAC plays a frame in points/pps seconds, so tuning these two per
+        game is how a heavy scene is stopped from strobing.
+        """
+        return int(self.game_points.get(game_key, self.lit_budget))
 
     def beam(self, colour: Colour) -> Colour:
         """Apply monochrome/brightness policy to a requested colour."""

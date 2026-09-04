@@ -108,12 +108,50 @@ single title.
 | Enter / Space | launch, or open CONFIG |
 | Esc | back to the menu from a game; quit from the menu |
 | P | pause |
+| Tab | open/close the **live tuner** — see below |
 | **`.`** | **DISARM the laser** — instant, from anywhere |
 | **`Shift-.`** | **ARM the laser** — press twice to confirm |
 
-The last two, plus **Q** (quit) and the whole **CONFIG** screen, are
+The last two, plus **Q** (quit), **Tab** and the whole **CONFIG** screen, are
 **keyboard-only**: a gamepad can play games and back out of them, and that is
 all. See [SAFETY.md](SAFETY.md) §3.
+
+### The live tuner
+
+**Tab**, from the menu or mid-game. Chasing flicker from the CONFIG screen
+doesn't work — the busy frame you're judging only exists while the game is
+drawing it — so this puts the two settings that decide refresh rate under four
+keys, for whatever is on screen right now:
+
+```
+TUNE  ASTEROIDS *  UNSAVED
+PPS     22000    - / =      point rate, 1000 at a time
+POINTS  450      [ / ]      point budget, 50 at a time
+FRAME   495 PTS  44 FPS     what the DAC actually got
+TAB CLOSE   \ SAVE   BKSP DEFAULTS
+```
+
+The game keeps running underneath, so you watch the change land (**P** pauses if
+you want a still frame to read). `FRAME` is the *measured* frame, not the budget
+— dwells and blanked travel sit on top of `POINTS`, so a 600 budget routinely
+emits 800–1400 — and it turns amber below 24 FPS and red below 18, which is
+where a laser starts to strobe. `*` means this game has its own settings rather
+than the defaults.
+
+**Nothing here is written to disk until you press `\`.** Closing, or quitting,
+leaves the values live for the session and no more — tuning is something you
+explore with, and an experiment shouldn't become the cabinet's permanent state.
+`Bksp` restores the defaults for whatever's on screen (at the menu, the shipped
+14000/600), which is the way back out of a session that went somewhere silly.
+CONFIG's **SAVE & BACK** also commits tuning, since it's the same values.
+
+⚠️ The two settings pull against each other and the direction that feels like
+"better" is the one that costs you: **more POINTS means fewer FPS**. Refresh is
+simply `PPS ÷ FRAME`. If a game looks smeared or strobed, read the FPS before
+adding points.
+
+It's drawn on the monitor, never into the beam: putting it in the scene would
+add points to the frame and move the very number you're reading.
 | Q | quit |
 
 In game: **arrows / WASD** move, **Space** fires, **Shift** is the alternate
@@ -157,9 +195,10 @@ only** — a gamepad can neither open it nor drive it. Saved to
 `~/.laser-arcade/config.json` and reloaded next launch.
 
 - **Laser** — ARM / DISARM. Arming asks for a second press.
-- **Max brightness** — the hard cap on output power, 5% by default. The first
-  press that would take it above 5% asks for confirmation; after that it just
-  adjusts. It is **not saved**: every launch starts back at 5%. See
+- **Max brightness** — the hard cap on output power, 5% by default. Adjusts in
+  10% steps, snapped to the grid, so 5% → 10% → 20% … → 100%. The first press
+  that would take it above 5% asks for confirmation; after that it just adjusts.
+  It is **not saved**: every launch starts back at 5%. See
   [SAFETY.md](SAFETY.md).
 - **Reset max brightness = 5** — snaps it straight back to bring-up power.
 - **Laser device** — none / Helios / LaserCube, switchable live. Switching
@@ -169,8 +208,21 @@ only** — a gamepad can neither open it nor drive it. Saved to
 - **Config Output** — `SCREEN ONLY` by default: the config screen is text-heavy
   and hard work at low PPS, and there's no reason to paint a wall of text with
   the beam. Switch it to `BOTH` if you want it on the laser.
-- **PPS per game** — each game can have its own point rate.
-- **Key bindings** — rebind any gameplay action. Esc, Q and P stay reserved.
+- **PPS default** — the point rate for the menu and the config screen, and the
+  fallback for any game without its own setting. 14000 out of the box.
+- **PPS / POINTS per game** — each game gets its own point rate and point
+  budget, listed in pairs with the refresh rate they produce (`POINTS ASTEROIDS
+  450  48FPS`). These are the two knobs that decide whether a busy scene
+  strobes; the **live tuner** above is the fast way to set them.
+- **Output scale** — shrink the whole image, in 5% steps down to 10%, on every
+  game and the menu alike. Framing rather than distortion correction, so the
+  preview shows it too. Note that a smaller image is a *hotter* one — the galvos
+  cover less ground at the same point rate — so this is not a way to turn the
+  power down; **Max brightness** is.
+- **Flip X / Flip Y** — mirror the beam for your optics. The DAC output only:
+  the preview stays audience-correct so mouse aiming still lines up.
+- **Key bindings** — rebind any gameplay action. Esc, Q, P and Tab stay reserved
+  (`- = [ ] \ Bksp` are reserved only while the tuner is open).
 - **Keystone H / V** — trapezoid correction for a projector that isn't square-on.
   Warps the DAC output only; the preview stays true.
 - **Reset highscores** — clears them all. Asks for a second press to confirm.

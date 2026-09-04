@@ -10,6 +10,11 @@ Reserved keys (the shell eats these; games never see them):
     Esc   -- in a game: back to menu;  in config: save & back;  in menu: quit
     Q     -- quit from anywhere
     P     -- pause / resume the running game
+    Tab   -- open/close the live tuner (PPS + POINTS for what's on screen)
+    - =   -- with the tuner open: point rate down / up
+    [ ]   -- with the tuner open: point budget down / up
+    \     -- with the tuner open: SAVE (nothing else writes tuning to disk)
+    Bksp  -- with the tuner open: drop back to the defaults
     .     -- DISARM the laser, instantly, from anywhere
     Shift-. -- ARM the laser (press twice to confirm)
 In the menu: Left/Right cycle the game carousel, Up/Down move focus between
@@ -40,11 +45,19 @@ from .game import Game, InputState
 from .joystick import JoystickManager
 from .keymap import ACTIONS
 from .outputs import Simulator, make_backend, to_frame
+from .tuner import Tuner
 
 
 # World units per second for the stick-driven virtual cursor. The world is 2
 # units across, so this crosses the screen in a little over a second.
 PAD_CURSOR_SPEED = 1.8
+
+# The live tuner's adjust keys. Chosen to miss every default gameplay binding
+# (arrows, WASD, space, shift, H, R) so the game stays playable while you tune,
+# and to sit in pairs under one hand.
+TUNER_KEYS = frozenset((pygame.K_LEFTBRACKET, pygame.K_RIGHTBRACKET,
+                        pygame.K_MINUS, pygame.K_EQUALS, pygame.K_BACKSPACE,
+                        pygame.K_BACKSLASH))
 
 
 def _blank_stream(cfg):
@@ -83,6 +96,11 @@ class Shell:
         self.diag_rows: Optional[list] = None   # TEST DEVICE readout, or None
         self.laser_msg = ""          # one-line status shown on the config screen
         self.mode = "menu"          # menu | game | config
+        # The tuner is an OVERLAY, not a mode: the game underneath keeps running
+        # while it is up, which is the whole point of it.
+        self.tuner: Optional[Tuner] = None   # built in run(), needs pygame.font
+        self.tuner_open = False
+        self.tuner_dirty = False
         self.quit_requested = False
         # populated from disk in run(); defined here so every method can rely
         # on them existing
@@ -141,9 +159,16 @@ class Shell:
         self.confirm_ceiling = False
 
     BRING_UP_CEILING = 0.05
+    CEILING_STEP_PCT = 10
 
     def _adjust_ceiling(self, delta: int) -> None:
-        """Left/Right by 1%.
+        """Left/Right by 10%, snapped onto the 10% grid.
+
+        It steps to the next multiple of 10 rather than adding 10 to whatever is
+        there, so the bring-up 5% doesn't leave you on 15/25/35 forever, and so
+        100% is actually reachable. Down from 5% therefore lands on 0, which is
+        the safe direction; RESET MAX BRIGHTNESS = 5 is how you get back to
+        bring-up power.
 
         Confirming is about *crossing* bring-up power, not about being above it:
         the first press that would take you past 5% asks, and once you are past
@@ -152,7 +177,13 @@ class Shell:
         not see what you were setting.
         """
         cur = self.laser.max_brightness
-        target = round(cur + delta * 0.01, 4)
+        step = self.CEILING_STEP_PCT
+        pct = int(round(cur * 100))
+        if delta > 0:
+            pct = pct - (pct % step) + step
+        else:
+            pct = pct + ((-pct) % step) - step
+        target = max(0, min(100, pct)) / 100.0
         crossing = (cur <= self.BRING_UP_CEILING + 1e-9
                     and target > self.BRING_UP_CEILING + 1e-9)
         if crossing and not self.confirm_ceiling:
@@ -163,6 +194,79 @@ class Shell:
         self._set_ceiling(target)
         self.confirm_ceiling = False
         self.menu_sfx.play("move")
+
+    # -- point rate / point budget -------------------------------------------
+    # Shared by the CONFIG screen and the live tuner, so the two cannot drift
+    # apart on clamps or step sizes. `ctx` is a game key, or None for the
+    # defaults (the menu, the config screen, and any game with no override).
+
+    def _adjust_pps(self, ctx, delta: int) -> None:
+        cfg = self.cfg
+        new = int(max(1000, min(60000, cfg.pps_for(ctx) + delta * 1000)))
+        if ctx is None:
+            cfg.pps = new
+        else:
+            cfg.game_pps[ctx] = new
+
+    def _adjust_points(self, ctx, delta: int) -> None:
+        # Capped at dac_max_points: the budget is a floor under the planner's
+        # own pps/fps budget, and anything past the DAC's per-frame limit is
+        # truncated downstream anyway.
+        cfg = self.cfg
+        new = int(max(100, min(cfg.dac_max_points,
+                               cfg.points_for(ctx) + delta * 50)))
+        if ctx is None:
+            cfg.lit_budget = new
+        else:
+            cfg.game_points[ctx] = new
+
+    def _tune_ctx(self):
+        """(game key or None, display label) for whatever is on screen."""
+        if self.mode == "game" and self.game is not None:
+            return self.game.key, self.game.name
+        return None, "DEFAULT"
+
+    def _tune(self, key: int) -> None:
+        """One keypress from the live tuner. Keyboard-only; see _reserved."""
+        cfg = self.cfg
+        ctx, _ = self._tune_ctx()
+        if key == pygame.K_BACKSLASH:
+            self._save_tuning()
+            self.menu_sfx.play("select")
+            return
+        if key == pygame.K_BACKSPACE:
+            # Back to defaults for whatever is on screen. At the menu that means
+            # the shipped defaults, which is the case that matters most: it is
+            # the only way out of a tuning session that went somewhere silly,
+            # and leaving it inert here (as this first did) left an operator
+            # with a slow cabinet and no way back short of editing JSON.
+            if ctx is None:
+                fresh = Settings()
+                cfg.pps, cfg.lit_budget = fresh.pps, fresh.lit_budget
+            else:
+                cfg.game_pps.pop(ctx, None)
+                cfg.game_points.pop(ctx, None)
+            self.menu_sfx.play("select")
+        elif key in (pygame.K_MINUS, pygame.K_EQUALS):
+            self._adjust_pps(ctx, 1 if key == pygame.K_EQUALS else -1)
+            self.menu_sfx.play("move")
+        else:
+            self._adjust_points(ctx, 1 if key == pygame.K_RIGHTBRACKET else -1)
+            self.menu_sfx.play("move")
+        self.tuner_dirty = True
+
+    def _save_tuning(self) -> None:
+        """Write the tuned values to disk. ONLY ever called from an explicit
+        save -- the tuner's own '\\' key, or the config screen's SAVE.
+
+        It deliberately does not save on close, on quit, or per keypress. A live
+        tuner is something you explore with, and the first version of this wrote
+        on every close: an experiment became the cabinet's permanent state, with
+        the direction that feels like "better" (more points) being the one that
+        costs refresh. Same reasoning as the config screen's SAVE & BACK.
+        """
+        if store.save_settings(self.cfg):
+            self.tuner_dirty = False
 
     def _switch_device(self, kind: str) -> None:
         """Swap the live backend. Always disarms, and stays disarmed: arming is
@@ -191,6 +295,9 @@ class Shell:
         # the laser goes through SafeOutput and the shared (N,6) frame format,
         # the simulator keeps consuming the raw planned point list.
         self.sim: Optional[Simulator] = Simulator(self.surface, cfg) if cfg.use_sim else None
+        # Built even with --no-sim: it draws on the monitor, not into the scene,
+        # so it is just as usable over a black window on a blind cabinet.
+        self.tuner = Tuner()
         self.laser = SafeOutput(self._backend(cfg.output_kind),
                                 max_brightness=cfg.max_brightness,
                                 armed=False)   # ALWAYS. No override, ever.
@@ -310,18 +417,25 @@ class Shell:
 
                 if self.mode == "game":
                     scene = self._game_step(dt, inp, text_col)
-                    use_pps = cfg.pps_for(self.game.key)
                 elif self.mode == "config":
                     scene = self._config_step(kbd_inp)   # keyboard only
-                    use_pps = cfg.pps
                 else:
                     scene = self._menu_step(inp, kbd_inp)
-                    use_pps = cfg.pps
+                # Resolved after the step, not inside it, so a menu Enter that
+                # has just launched a game already plans with that game's
+                # settings rather than one frame of the menu's.
+                ctx, label = self._tune_ctx()
 
-                save_pps = cfg.pps
-                cfg.pps = use_pps
+                # The planner reads pps/lit_budget off Settings, so the per-game
+                # overrides are swapped in around the one call rather than
+                # threaded through its signature. Restored immediately: the
+                # config screen renders from the same Settings and must show
+                # what is stored, not whatever the last frame happened to use.
+                use_pps = cfg.pps_for(ctx)
+                saved = (cfg.pps, cfg.lit_budget)
+                cfg.pps, cfg.lit_budget = use_pps, cfg.points_for(ctx)
                 stream, _ = pathplan.plan(scene, cfg)
-                cfg.pps = save_pps
+                cfg.pps, cfg.lit_budget = saved
 
                 self.surface.fill((0, 0, 0))
                 if self.sim:
@@ -340,8 +454,19 @@ class Shell:
                     self.laser.write(to_frame(_blank_stream(cfg), cfg), use_pps)
                 else:
                     self.laser.write(to_frame(stream, cfg), use_pps)
+
+                # Last, so it sits over the preview -- and after the laser
+                # write, to make it obvious it costs the beam nothing. It
+                # reports len(stream): the frame the DAC actually got, dwells
+                # and blanked travel included, not the budget that was asked for.
+                if self.tuner_open and self.mode != "config":
+                    self.tuner.draw(self.surface, cfg, ctx, label,
+                                    len(stream), use_pps, self.tuner_dirty)
                 pygame.display.flip()
         finally:
+            # Note there is no _save_tuning() here on purpose: unsaved tuning
+            # dies with the session. High scores are the player's and are kept;
+            # an untested point budget is not something to inherit on next boot.
             self._flush_scores()      # quitting mid-game still keeps the score
             if self.game_sfx:
                 self.game_sfx.close()
@@ -373,6 +498,22 @@ class Shell:
         # While config is open the pad does nothing at all. Checked first so it
         # covers Escape, Q and the arm keys in one place rather than three.
         if from_pad and self.mode == "config":
+            return True
+        if key == pygame.K_TAB:
+            # The live tuner. Not offered over the config screen, which already
+            # has these rows and owns the arrow keys.
+            if from_pad or self.mode == "config":
+                return True
+            # Closing does NOT write to disk -- '\' does. Values stay live for
+            # the session either way, so nothing is lost by closing.
+            self.tuner_open = not self.tuner_open
+            return True
+        if self.tuner_open and key in TUNER_KEYS:
+            # Only reserved *while the tuner is open*, so these four keys are
+            # ordinary rebindable keys the rest of the time -- the same bargain
+            # the arrow keys already make with the config screen.
+            if not from_pad:
+                self._tune(key)
             return True
         if key == pygame.K_q:
             if not from_pad:
@@ -407,7 +548,7 @@ class Shell:
                 if self.diag_rows is not None:
                     self.diag_rows = None      # leave TEST DEVICE, stay in config
                 else:
-                    store.save_settings(self.cfg)
+                    self._save_tuning()   # also clears the tuner's UNSAVED mark
                     self.mode = "menu"
             elif not from_pad:
                 self.quit_requested = True
@@ -442,6 +583,11 @@ class Shell:
         if self.menu_focus == "config":
             if kbd_inp.hit(pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
                 self.menu_sfx.play("select")
+                # The config screen lists the same PPS/POINTS values, so leaving
+                # the overlay up would give you two live views of one setting.
+                # Unsaved tuning stays live and is shown there; SAVE & BACK is
+                # what commits it, same as any other row.
+                self.tuner_open = False
                 self.mode = "config"
                 self.cfg_sel = 0
                 self.diag_rows = None
@@ -506,8 +652,19 @@ class Shell:
         rows.append(("device", None, "LASER DEVICE"))
         rows.append(("diag", None, "TEST DEVICE"))
         rows.append(("output", None, "CONFIG OUTPUT"))
+        # key=None is the global default: the menu, the config screen, and any
+        # game with no override of its own. PPS and POINTS are interleaved
+        # rather than listed in two blocks because they are one setting in
+        # practice -- the refresh rate the audience sees is points/pps, so you
+        # always end up adjusting them against each other.
+        rows.append(("pps", None, "PPS DEFAULT"))
+        rows.append(("points", None, "POINTS DEFAULT"))
         for g in self.games:
             rows.append(("pps", g.key, "PPS " + g.name))
+            rows.append(("points", g.key, "POINTS " + g.name))
+        rows.append(("scale", None, "OUTPUT SCALE"))
+        rows.append(("flip", "invert_x", "FLIP X"))
+        rows.append(("flip", "invert_y", "FLIP Y"))
         rows.append(("keystone", "keystone_h", "KEYSTONE H"))
         rows.append(("keystone", "keystone_v", "KEYSTONE V"))
         for action, label in ACTIONS:
@@ -542,8 +699,19 @@ class Shell:
         kind, key, _ = rows[self.cfg_sel]
         delta = (1 if inp.hit(pygame.K_RIGHT) else 0) - (1 if inp.hit(pygame.K_LEFT) else 0)
         if delta and kind == "pps":
-            cur = cfg.pps_for(key)
-            cfg.game_pps[key] = int(max(1000, min(60000, cur + delta * 1000)))
+            self._adjust_pps(key, delta)
+            self.menu_sfx.play("move")
+        elif delta and kind == "points":
+            self._adjust_points(key, delta)
+            self.menu_sfx.play("move")
+        elif delta and kind == "scale":
+            # 5% steps. Floored at 10%: below that the whole scan is squeezed
+            # into a spot, which is hotter rather than safer (see Settings).
+            cfg.output_scale = round(max(0.10, min(1.0,
+                                     cfg.output_scale + delta * 0.05)), 2)
+            self.menu_sfx.play("move")
+        elif delta and kind == "flip":
+            setattr(cfg, key, not getattr(cfg, key))
             self.menu_sfx.play("move")
         elif delta and kind == "keystone":
             cur = getattr(cfg, key)
@@ -564,6 +732,9 @@ class Shell:
                 self.capture_action = key
             elif kind == "output":
                 cfg.config_laser_output = not cfg.config_laser_output
+                self.menu_sfx.play("select")
+            elif kind == "flip":
+                setattr(cfg, key, not getattr(cfg, key))
                 self.menu_sfx.play("select")
             elif kind == "laser_arm":
                 if self.laser.armed:
@@ -601,7 +772,7 @@ class Shell:
                     self.confirm_scores = True
                     self.menu_sfx.play("move")
             elif kind == "save":
-                store.save_settings(cfg)
+                self._save_tuning()   # also clears the tuner's UNSAVED mark
                 self.menu_sfx.play("select")
                 self.mode = "menu"
                 return []
@@ -623,6 +794,16 @@ class Shell:
             kind, key, label = rows[r]
             if kind == "pps":
                 text = "%s  %d" % (label, cfg.pps_for(key))
+            elif kind == "points":
+                # The point count on its own means nothing standing at a
+                # cabinet; the refresh rate it buys is the number you are
+                # actually chasing, so show that next to it.
+                pts = cfg.points_for(key)
+                text = "%s  %d  %dFPS" % (label, pts, cfg.pps_for(key) / pts)
+            elif kind == "scale":
+                text = "%s  %d%%" % (label, round(cfg.output_scale * 100))
+            elif kind == "flip":
+                text = "%s  %s" % (label, "ON" if getattr(cfg, key) else "OFF")
             elif kind == "keystone":
                 text = "%s  %+.2f" % (label, getattr(cfg, key))
             elif kind == "output":

@@ -166,6 +166,104 @@ def _safety_checks(verbose: bool = True):
         assert list(f[:, 0]) != [0, 4095, 2047], "keystone had no effect"
     check("keystone warps, stays in field", keystone_applies_and_stays_in_range)
 
+    def output_scale_shrinks_the_field():
+        """OUTPUT SCALE is framing, so unlike the ceiling it is applied in the
+        mapper and therefore shows up in the preview too. What must hold is that
+        it is upstream of to_frame(), i.e. still in front of SafeOutput."""
+        from . import pathplan
+        square = [([(-1, -1), (1, -1), (1, 1), (-1, 1), (-1, -1)],
+                   (255, 255, 255))]
+        c = Settings().dac_range / 2.0
+
+        def extent(cfg):
+            stream, _ = pathplan.plan(square, cfg)
+            return max(max(abs(p[0] - c), abs(p[1] - c)) for p in stream)
+
+        cfg = Settings()
+        full = extent(cfg)
+        cfg.output_scale = 0.5
+        assert abs(extent(cfg) - full * 0.5) <= 2, \
+            "50% scale did not halve the field"
+        # Floored, because squeezing the whole scan into a spot is hotter, not
+        # safer -- a 0 here would park every point on the centre.
+        cfg.output_scale = 0.0
+        assert abs(extent(cfg) - full * 0.10) <= 2, "output_scale floor is gone"
+    check("output scale shrinks the field", output_scale_shrinks_the_field)
+
+    def geometry_round_trips():
+        from . import store
+        cfg = Settings()
+        cfg.pps, cfg.output_scale = 21000, 0.6
+        cfg.invert_x, cfg.invert_y = True, False
+        cfg.lit_budget = 450
+        cfg.game_pps, cfg.game_points = {"pong": 9000}, {"pong": 300}
+        fresh = Settings()
+        store.apply_to(fresh, store.from_settings(cfg))
+        got = (fresh.pps, fresh.output_scale, fresh.invert_x, fresh.invert_y)
+        assert got == (21000, 0.6, True, False), \
+            "output geometry did not survive a save/load: %r" % (got,)
+        assert (fresh.pps_for("pong"), fresh.points_for("pong")) == (9000, 300), \
+            "per-game pps/points overrides did not survive a save/load"
+        assert (fresh.pps_for(None), fresh.points_for(None)) == (21000, 450), \
+            "the defaults behind the overrides did not survive a save/load"
+    check("pps/points/scale/flip persist", geometry_round_trips)
+
+    def per_game_points_reach_the_planner():
+        """A POINTS override has to land on Settings.lit_budget around the
+        plan() call and be put back afterwards -- the config screen renders from
+        the same Settings and must show what is stored, not the last frame."""
+        from . import pathplan
+        cfg = Settings()
+        cfg.pps = 14000
+        busy = [([(x / 10.0 - 1, -0.9), (x / 10.0 - 1, 0.9)], (255, 255, 255))
+                for x in range(20)]
+
+        def points(budget):
+            cfg.lit_budget = budget
+            return len(pathplan.plan(busy, cfg)[0])
+
+        assert points(1200) > points(300), \
+            "the point budget did not change the frame it produced"
+        cfg.lit_budget = 600
+        cfg.game_points = {"pong": 250}
+        assert cfg.points_for("pong") == 250 and cfg.points_for(None) == 600, \
+            "points_for() ignored the override or the default"
+    check("per-game point budget takes effect", per_game_points_reach_the_planner)
+
+    def ceiling_steps_by_ten():
+        """10% steps, snapped to the grid, with the 5% crossing still confirmed."""
+        from .shell import Shell
+        from games import GAMES
+
+        class _Mute:
+            def play(self, *a):
+                pass
+
+        sh = Shell(Settings(), GAMES)
+        sh.laser = SafeOutput(_SpyBackend(), max_brightness=0.05)
+        sh.menu_sfx = _Mute()
+        try:
+            sh._adjust_ceiling(+1)
+            assert sh.laser.max_brightness == 0.05, \
+                "the first step past 5% went through without confirming"
+            assert sh.confirm_ceiling, "no confirm was armed crossing 5%"
+            sh._adjust_ceiling(+1)
+            assert abs(sh.laser.max_brightness - 0.10) < 1e-9, \
+                "step off 5% did not snap to 10%%: %r" % sh.laser.max_brightness
+            for _ in range(20):
+                sh._adjust_ceiling(+1)
+            assert sh.laser.max_brightness == 1.0, \
+                "100%% is not reachable: %r" % sh.laser.max_brightness
+            sh._adjust_ceiling(-1)
+            assert abs(sh.laser.max_brightness - 0.90) < 1e-9, \
+                "down step was not 10%%: %r" % sh.laser.max_brightness
+            for _ in range(20):
+                sh._adjust_ceiling(-1)
+            assert sh.laser.max_brightness == 0.0, "cannot get back to zero"
+        finally:
+            sh.laser.close()
+    check("ceiling steps 10%, confirms at 5%", ceiling_steps_by_ten)
+
     # -- keyboard-only gating (the cabinet's public-facing rule) --
     def pad_cannot_touch_the_laser():
         from .shell import Shell
@@ -203,6 +301,69 @@ def _safety_checks(verbose: bool = True):
         finally:
             sh.laser.close()
     check("gamepad cannot arm/disarm/quit", pad_cannot_touch_the_laser)
+
+    def pad_cannot_reach_the_tuner():
+        """The live tuner is an operator control, so it is keyboard-only like
+        arm, quit and the config screen -- and its keys must stay reserved only
+        while it is open, or a game bound to '[' would silently lose it."""
+        from .shell import Shell, TUNER_KEYS
+        from games import GAMES
+
+        class _Mute:
+            def play(self, *a):
+                pass
+
+        cfg = Settings()
+        sh = Shell(cfg, GAMES)
+        sh.menu_sfx = _Mute()
+        sh.mode = "game"
+        sh.game = GAMES[0](cfg)
+
+        assert sh._reserved(pygame.K_TAB, 0, from_pad=True) is True
+        assert not sh.tuner_open, "a gamepad opened the live tuner"
+        for k in TUNER_KEYS:
+            assert sh._reserved(k, 0) is False, \
+                "tuner key %s was reserved with the tuner closed" % k
+
+        sh._reserved(pygame.K_TAB, 0)
+        assert sh.tuner_open, "the keyboard could not open the tuner"
+
+        before = (cfg.pps_for(sh.game.key), cfg.points_for(sh.game.key))
+        for k in TUNER_KEYS:
+            assert sh._reserved(k, 0, from_pad=True) is True, \
+                "pad key %s leaked past the tuner" % k
+        assert (cfg.pps_for(sh.game.key), cfg.points_for(sh.game.key)) == before, \
+            "a gamepad retuned the running game"
+
+        # ...and the keyboard edits the RUNNING GAME, not the defaults
+        sh._reserved(pygame.K_RIGHTBRACKET, 0)
+        sh._reserved(pygame.K_EQUALS, 0)
+        assert cfg.points_for(sh.game.key) == before[1] + 50, "']' did not adjust"
+        assert cfg.pps_for(sh.game.key) == before[0] + 1000, "'=' did not adjust"
+        assert cfg.lit_budget == Settings().lit_budget and cfg.pps == Settings().pps, \
+            "tuning a game moved the global defaults"
+        sh._reserved(pygame.K_BACKSPACE, 0)
+        assert (cfg.pps_for(sh.game.key), cfg.points_for(sh.game.key)) == before, \
+            "BKSP did not drop the game back onto the defaults"
+
+        # BKSP at the menu restores the shipped defaults -- the only way back
+        # out of a tuning session that went somewhere silly.
+        sh.mode, sh.game = "menu", None
+        sh._reserved(pygame.K_MINUS, 0)
+        sh._reserved(pygame.K_LEFTBRACKET, 0)
+        sh._reserved(pygame.K_BACKSPACE, 0)
+        assert (cfg.pps, cfg.lit_budget) == (Settings().pps, Settings().lit_budget), \
+            "BKSP at the menu did not restore the shipped defaults"
+
+        # ...and closing must NOT write to disk. Checked via the dirty flag
+        # rather than the filesystem: the test must not touch the operator's
+        # real ~/.laser-arcade/config.json, and _save_tuning is the only thing
+        # that clears it.
+        sh.tuner_dirty = True
+        sh._reserved(pygame.K_TAB, 0)
+        assert not sh.tuner_open, "TAB did not close the tuner"
+        assert sh.tuner_dirty, "closing the tuner persisted an experiment to disk"
+    check("gamepad cannot reach the tuner", pad_cannot_reach_the_tuner)
 
     def pad_cannot_reach_config():
         from .shell import Shell

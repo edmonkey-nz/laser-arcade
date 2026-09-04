@@ -51,7 +51,9 @@ class Simulator(Output):
         # The invert/swap flags are *hardware calibration* for the projector, so
         # we undo them here: the preview should always show the upright,
         # audience-correct image regardless of how the beam had to be flipped for
-        # your optics. Fill/scale are kept, so the field margin still shows.
+        # your optics. Fill and output_scale are deliberately NOT undone -- they
+        # are framing rather than distortion correction, so the field margin and
+        # a scaled-down image both show up here exactly as the DAC gets them.
         cfg = self.cfg
         half = (cfg.dac_range / 2.0) * cfg.fill
         nx = (x - cfg.dac_range / 2.0) / half

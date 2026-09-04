@@ -3,4 +3,4 @@
 Everything here knows about lasers and drawing, but nothing about any specific
 game. A game is anything that implements `engine.game.Game`.
 """
-__version__ = "1.3.0"
+__version__ = "1.4.0"

@@ -94,8 +94,24 @@ Three gates consume it, all in `engine/shell.py`:
 2. `_config_step(kbd_inp)` — one call site, always the keyboard-only view, so a
    config row added later cannot accidentally become pad-reachable.
 3. `_reserved(key, mod, from_pad)` — the pre-existing hook that already made
-   quitting keyboard-only. It now also owns `.` / `Shift-.` (disarm/arm) and
-   returns early for *any* pad key while `mode == "config"`.
+   quitting keyboard-only. It now also owns `.` / `Shift-.` (disarm/arm), `Tab`
+   and the live tuner's `- = [ ] \ Bksp`, and returns early for *any* pad key
+   while `mode == "config"`.
+
+The tuner (`engine/tuner.py`) is an **overlay, not a fourth mode** — `Shell.mode`
+stays `menu | game | config` and the game underneath keeps running. Its four
+adjust keys are reserved *only while it is open*, so they remain ordinary
+rebindable keys the rest of the time; that is the same bargain the arrow keys
+already make with the config screen. It edits through `_adjust_pps` /
+`_adjust_points`, shared with the CONFIG rows so clamps and step sizes cannot
+drift apart, and it draws with the bitmap font onto the monitor — putting it in
+the scene would add points to the frame and move the very number being tuned.
+
+`_save_tuning()` is called **only** from an explicit save — the tuner's `\` or
+CONFIG's SAVE & BACK. Not on close, not on quit, not per keypress. The first
+version wrote on every close, and an afternoon's experimenting duly became the
+cabinet's permanent state at 5 FPS; `POINTS` is the trap, because the direction
+that reads as "better quality" is the one that costs refresh.
 
 `--selftest` drives all of this through the real merge path with a synthetic
 pad; see `_safety_checks` in `engine/selftest.py`.
@@ -368,6 +384,13 @@ Then carry the same flags to `run.py`. The on-screen preview stays upright no
 matter which orientation flags you set, so it never mirrors when you flip the
 beam for your optics.
 
+Orientation, overall size and the default point rate are also rows on the CONFIG
+screen (FLIP X / FLIP Y, OUTPUT SCALE, PPS DEFAULT) and are saved to
+`~/.laser-arcade/config.json`, so a cabinet only needs calibrating once. A flag
+on the command line beats the saved value for that run — see the `explicit` dict
+in `run.py`, which is re-applied after `store.apply_to()` for exactly that
+reason.
+
 ## Scanner tuning guide
 
 Everything lives in `engine/config.py`; the most useful are also CLI flags. All
@@ -375,13 +398,15 @@ distances are in DAC units (the field is `0..4095`).
 
 | Setting / flag | What it does |
 |---|---|
-| `--pps` | Points per second to the DAC. Higher = less flicker, but your galvos have a ceiling (cheaper scanners ~20–30k). |
+| `--pps` | Points per second to the DAC. Higher = less flicker, but your galvos have a ceiling (cheaper scanners ~20–30k). Per game on the CONFIG screen and under Tab. |
+| `--lit-budget` / POINTS | Floor under the planner's per-frame budget, and per game the main lever on refresh rate: the DAC plays a frame in `points/pps` seconds. It bounds *interpolation* only — dwells and blanked travel land on top, so a busy multi-shape scene emits well over its budget. |
 | `--fps` / `target_fps` | Frame build rate. The planner budgets **total points ≈ pps/fps**, so these two together cap how much detail a frame holds before it auto-coarsens. |
 | `--max-step` | Finest gap between lit points. Smaller = brighter, straighter lines and more points; larger = fewer, faster, fainter. It's a floor — the planner only ever goes *coarser* when busy. |
 | `corner_dwell` | Points held at corners so mirrors settle instead of rounding them. Raise if corners look mushy; it costs points. |
 | `start_dwell` / `end_dwell` | Points held at each shape's start/end so the beam doesn't smear on/off. |
 | `blank_dwell` / `blank_step` | Beam-off jumps between shapes. Raise `blank_dwell` if faint "tails" appear before a mirror arrives; lower `blank_step` if long jumps leave tails. |
 | `--fill` | Field usage (0..1). Leave a border so you don't slam the galvo rails. |
+| `--scale` / `output_scale` | Overall image size (0.10..1.0), on top of `--fill`. Framing for the room, and the one geometry setting the preview *does* show. A smaller image is a hotter one — same power, less ground covered — so it is not a power control. |
 | `--invert-x/-y`, `--swap-xy` | Orientation, per your projector. DAC only; the preview stays upright. |
 | `--mono` / `--brightness` | Single-colour output / global colour scale. |
 | `--show-blanking` | Draw the beam-off travel faintly in the simulator. |
